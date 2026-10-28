@@ -1,8 +1,16 @@
 {
-  "name":"razem-dwoje",
-  "version":"1.0.0",
-  "private":true,
-  "type":"module",
-  "scripts":{"dev":"wrangler dev","deploy":"wrangler deploy","db:local":"wrangler d1 execute razem-dwoje-data --local --file=./schema.sql","db:remote":"wrangler d1 execute razem-dwoje-data --remote --file=./schema.sql"},
-  "devDependencies":{"wrangler":"^4.0.0"}
+  "name": "razem-dwoje",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node build-css.mjs",
+    "dev": "node build-css.mjs && wrangler dev",
+    "deploy": "node build-css.mjs && wrangler deploy",
+    "db:local": "wrangler d1 execute razem-dwoje-data --local --file=./schema.sql",
+    "db:remote": "wrangler d1 execute razem-dwoje-data --remote --file=./schema.sql"
+  },
+  "devDependencies": {
+    "wrangler": "^4.0.0"
+  }
 }
