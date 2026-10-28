@@ -1,0 +1,9 @@
+{
+  "$schema":"./node_modules/wrangler/config-schema.json",
+  "name":"razem-dwoje",
+  "main":"src/index.js",
+  "compatibility_date":"2026-10-27",
+  "workers_dev":true,
+  "assets":{"directory":"./public","binding":"ASSETS","run_worker_first":true},
+  "d1_databases":[{"binding":"DB","database_name":"razem-dwoje-data","database_id":"d96ac17a-1cfb-46a8-b4a3-e12fe746e3e2"}]
+}
