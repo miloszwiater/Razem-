@@ -5,7 +5,10 @@ CREATE TABLE IF NOT EXISTS pairs (
  first_met_at TEXT,
  active_since INTEGER,
  active_recorded INTEGER NOT NULL DEFAULT 0,
- apart_since INTEGER
+ apart_since INTEGER,
+ confirm1_at INTEGER,
+ confirm2_at INTEGER,
+ notified_near_at INTEGER
 );
 CREATE TABLE IF NOT EXISTS members (
  id TEXT PRIMARY KEY,
@@ -18,6 +21,8 @@ CREATE TABLE IF NOT EXISTS members (
  longitude REAL,
  accuracy REAL,
  location_at INTEGER,
+ geo_on INTEGER NOT NULL DEFAULT 0,
+ ping_at INTEGER,
  UNIQUE(pair_id, slot)
 );
 CREATE TABLE IF NOT EXISTS meetings (
@@ -26,8 +31,10 @@ CREATE TABLE IF NOT EXISTS meetings (
  occurred_at INTEGER NOT NULL,
  source TEXT NOT NULL CHECK(source IN ('manual','auto')),
  created_by TEXT,
- created_at INTEGER NOT NULL
+ created_at INTEGER NOT NULL,
+ session_key TEXT
 );
+CREATE UNIQUE INDEX IF NOT EXISTS ux_meetings_session ON meetings(session_key) WHERE session_key IS NOT NULL;
 CREATE INDEX IF NOT EXISTS ix_meetings_pair ON meetings(pair_id,occurred_at DESC);
 CREATE INDEX IF NOT EXISTS ix_members_pair ON members(pair_id);
 
@@ -37,5 +44,12 @@ CREATE TABLE IF NOT EXISTS pair_prefs (
  equipped TEXT NOT NULL DEFAULT '[]',
  opened TEXT NOT NULL DEFAULT '[]',
  seen_count INTEGER NOT NULL DEFAULT 0,
- updated_at INTEGER NOT NULL DEFAULT 0
+ updated_at INTEGER NOT NULL DEFAULT 0,
+ claimed TEXT NOT NULL DEFAULT '[]',
+ version INTEGER NOT NULL DEFAULT 0,
+ last_change TEXT
 );
+CREATE TABLE IF NOT EXISTS member_tokens (token_hash TEXT PRIMARY KEY, member_id TEXT NOT NULL REFERENCES members(id), created_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS member_recovery (member_id TEXT PRIMARY KEY REFERENCES members(id), code_hash TEXT NOT NULL UNIQUE, created_at INTEGER NOT NULL);
+
+CREATE TABLE IF NOT EXISTS push_subs (endpoint TEXT PRIMARY KEY, member_id TEXT NOT NULL REFERENCES members(id), p256dh TEXT NOT NULL, auth TEXT NOT NULL, created_at INTEGER NOT NULL);
