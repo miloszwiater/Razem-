@@ -1,5 +1,5 @@
-const VERSION = 'razem-static-v2';
-const CORE = ['/', '/index.html', '/style.css', '/app.js', '/icon.svg', '/manifest.webmanifest'];
+const VERSION = 'razem-static-v3';
+const CORE = ['/', '/index.html', '/style.css', '/app.js', '/rewards.js', '/puszystek.js', '/icon.svg', '/manifest.webmanifest'];
 self.addEventListener('install', event => { event.waitUntil(caches.open(VERSION).then(c => c.addAll(CORE))); self.skipWaiting(); });
 self.addEventListener('activate', event => { event.waitUntil(caches.keys().then(keys => Promise.all(keys.filter(k => k !== VERSION).map(k => caches.delete(k))))); self.clients.claim(); });
 // Network first, cache as offline fallback. The API is never cached.
