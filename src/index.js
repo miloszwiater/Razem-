@@ -1,4 +1,5 @@
-import { BY_ID, unlockedIds, sanitizeOutfit, claimable } from '../public/rewards.js';
+import { BY_ID, unlockedIds, sanitizeOutfit, claimable, ACHIEVEMENTS, isHouse } from '../public/rewards.js';
+import { ITEMS as ROOM_ITEMS, arrange, check as checkPlacement, movable } from '../public/room.js';
 import { RULES, RADII, verdict, transition, haversine } from './proximity.js';
 import { pushReady, sendPush } from './push.js';
 
@@ -23,7 +24,7 @@ async function ensureSchema(env){
   const cols=new Set(((await env.DB.prepare(`PRAGMA table_info(${table})`).all()).results||[]).map(c=>c.name));
   for(const [c,def] of list){if(cols.has(c))continue;try{await env.DB.prepare(`ALTER TABLE ${table} ADD COLUMN ${c} ${def}`).run()}catch(e){if(!/duplicate column/i.test(String(e?.message)))throw e}}
  };
- await addColumns('pair_prefs',[['claimed',"TEXT NOT NULL DEFAULT '[]'"],['version','INTEGER NOT NULL DEFAULT 0'],['last_change','TEXT']]);
+ await addColumns('pair_prefs',[['claimed',"TEXT NOT NULL DEFAULT '[]'"],['version','INTEGER NOT NULL DEFAULT 0'],['last_change','TEXT'],['room',"TEXT NOT NULL DEFAULT '{}'"],['achieved',"TEXT NOT NULL DEFAULT '{}'"]]);
  await addColumns('members',[['geo_on','INTEGER NOT NULL DEFAULT 0'],['ping_at','INTEGER']]);
  await addColumns('pairs',[['confirm1_at','INTEGER'],['confirm2_at','INTEGER'],['notified_near_at','INTEGER']]);
  await addColumns('meetings',[['session_key','TEXT']]);
@@ -36,7 +37,8 @@ async function ensureSchema(env){
  schemaReady=true;
 }
 const countOf=async(env,pairId)=>(await env.DB.prepare('SELECT COUNT(*) AS n FROM meetings WHERE pair_id=?').bind(pairId).first()).n;
-const PREF_COLS='radius,equipped,opened,claimed,seen_count,version,last_change';
+const PREF_COLS='radius,equipped,opened,claimed,seen_count,version,last_change,room,achieved';
+const obj=(s)=>{try{const v=JSON.parse(s||'{}');return v&&typeof v==='object'&&!Array.isArray(v)?v:{}}catch{return {}}};
 async function prefs(env,pairId){
  let p=await env.DB.prepare(`SELECT ${PREF_COLS} FROM pair_prefs WHERE pair_id=?`).bind(pairId).first();
  if(!p){
@@ -47,7 +49,7 @@ async function prefs(env,pairId){
  // rows from before the inventory existed: whatever was worn or opened counts as claimed
  const claimed=[...new Set([...parse(p.claimed,[]),...equipped,...opened,...opened.map(g=>BY_ID[g]?.reveals).filter(Boolean)])];
  let last=null;try{last=p.last_change?JSON.parse(p.last_change):null}catch{}
- return {radius:p.radius,equipped,opened,claimed,seenCount:p.seen_count,version:Number(p.version)||0,lastChange:last};
+ return {radius:p.radius,equipped,opened,claimed,seenCount:p.seen_count,version:Number(p.version)||0,lastChange:last,room:obj(p.room),achieved:obj(p.achieved)};
 }
 // Inventory writes use optimistic concurrency: the row is written only if its
 // version is still the one we read; otherwise we re-read and re-apply the
@@ -56,8 +58,8 @@ async function mutate(env,pairId,fn){
  for(let i=0;i<5;i++){
   const p=await prefs(env,pairId),n=await countOf(env,pairId);
   const next=fn(p,n);if(!next)return;
-  const r=await env.DB.prepare('UPDATE pair_prefs SET equipped=?,claimed=?,opened=?,last_change=?,version=version+1,updated_at=? WHERE pair_id=? AND version=?')
-   .bind(JSON.stringify(next.equipped??p.equipped),JSON.stringify(next.claimed??p.claimed),JSON.stringify(next.opened??p.opened),JSON.stringify(next.change),Date.now(),pairId,p.version).run();
+  const r=await env.DB.prepare('UPDATE pair_prefs SET equipped=?,claimed=?,opened=?,room=?,last_change=?,version=version+1,updated_at=? WHERE pair_id=? AND version=?')
+   .bind(JSON.stringify(next.equipped??p.equipped),JSON.stringify(next.claimed??p.claimed),JSON.stringify(next.opened??p.opened),JSON.stringify(next.room??p.room),JSON.stringify(next.change),Date.now(),pairId,p.version).run();
   if(r.meta?.changes===1)return;
  }
  throw new Error('busy');
@@ -65,6 +67,9 @@ async function mutate(env,pairId,fn){
 // After the shared count changed: remember it and take off anything that is locked again.
 async function syncRewards(env,pairId){
  const p=await prefs(env,pairId),n=await countOf(env,pairId);
+ // remember when each achievement was reached (0 = before this was recorded)
+ const reached=ACHIEVEMENTS.filter(a=>a.source==='meetings'&&n>=a.at&&!(a.id in p.achieved));
+ if(reached.length){const ach={...p.achieved};for(const a of reached)ach[a.id]=n>p.seenCount&&a.at>p.seenCount?Date.now():0;await env.DB.prepare('UPDATE pair_prefs SET achieved=? WHERE pair_id=?').bind(JSON.stringify(ach),pairId).run()}
  if(n===p.seenCount)return;
  const outfit=sanitizeOutfit(p.equipped,n,p.opened);
  await env.DB.prepare('UPDATE pair_prefs SET seen_count=?,equipped=?,version=version+?,updated_at=? WHERE pair_id=?').bind(n,JSON.stringify(outfit),outfit.length!==p.equipped.length?1:0,Date.now(),pairId).run();
@@ -147,13 +152,14 @@ function proximityOut(v,me){
 }
 
 async function state(env,m){
+ await syncRewards(env,m.pair_id);
  const {pair,rows,me,v}=await judge(env,m.pair_id,m.slot);if(!pair)return null;
  const meets=await env.DB.prepare('SELECT id,occurred_at,source FROM meetings WHERE pair_id=? ORDER BY occurred_at DESC LIMIT 60').bind(m.pair_id).all();
  const n=await countOf(env,m.pair_id);
  const p=await prefs(env,m.pair_id);
  const subs=(await env.DB.prepare('SELECT COUNT(*) AS n FROM push_subs WHERE member_id=?').bind(m.id).first()).n;
  return {you:m.slot,members:rows.map(x=>({name:x.display_name,slot:x.slot,locationActive:!!x.geo_on&&Number(x.location_at||0)>Date.now()-RULES.FRESH})),code:rows.length<2?pair.invite_code:null,firstMetAt:pair.first_met_at,createdAt:pair.created_at,count:n,meetings:meets.results||[],together:v.stage==='together'||v.stage==='recorded',connected:rows.length===2,
-  rewards:{unlocked:unlockedIds(n),claimed:p.claimed.filter(x=>claimable(BY_ID[x],n,p.opened)),equipped:sanitizeOutfit(p.equipped,n,p.opened,p.claimed),opened:p.opened,version:p.version,lastChange:p.lastChange},
+  rewards:{unlocked:unlockedIds(n),claimed:p.claimed.filter(x=>claimable(BY_ID[x],n,p.opened)),equipped:sanitizeOutfit(p.equipped,n,p.opened,p.claimed),opened:p.opened,version:p.version,lastChange:p.lastChange,room:p.room,achieved:p.achieved},
   proximity:proximityOut(v,me),push:{available:pushReady(env),key:env.VAPID_PUBLIC||null,subscribed:subs>0}};
 }
 
@@ -280,6 +286,27 @@ async function api(req,env,path,ctx){
    return {equipped:p.equipped.filter(x=>x!==r.id),change:{op,id:r.id,by:m.slot,at:Date.now()}};
   });
   if(err==='conflict')return Response.json({error:'Druga osoba właśnie to zmieniła — zobaczcie, co wybrała.',conflict:true,state:await state(env,m)},{status:409,headers:{'Cache-Control':'no-store'}});
+  return err||ok(await state(env,m));
+ }
+ if(method==='POST'&&path==='/api/room-move'){
+  // Move a placed house item. Validated with the same rules as the editor (zone,
+  // collisions); `expect` is where this phone saw it, so a partner's move at the
+  // same moment is never overwritten silently.
+  const b=await body(req),idm=b?.id,x=Number(b?.x),y=Number(b?.y);
+  if(!ROOM_ITEMS[idm]||!movable(idm)||!Number.isInteger(x)||!Number.isInteger(y))return bad('Nieprawidłowe miejsce.');
+  let err=null;
+  await mutate(env,m.pair_id,(p,n)=>{
+   const placed=p.equipped.filter(i=>isHouse(BY_ID[i])||ROOM_ITEMS[i]);
+   const isBasic=idm==='bedBasic'||idm==='rugBasic';
+   if(!isBasic&&!placed.includes(idm)){err=bad('Najpierw ustaw ten przedmiot w domku.',403);return null}
+   const pos=arrange(placed.filter(i=>sanitizeOutfit([i],n,p.opened,p.claimed).length),p.room);
+   if(!pos[idm]){err=bad('Tego przedmiotu nie ma teraz w pokoju.',409);return null}
+   if(Array.isArray(b.expect)&&(b.expect[0]!==pos[idm][0]||b.expect[1]!==pos[idm][1])){err='conflict';return null}
+   const c=checkPlacement(idm,[x,y],pos);if(!c.ok){err=bad(c.reason,422);return null}
+   if(pos[idm][0]===x&&pos[idm][1]===y)return null;
+   return {room:{...p.room,[idm]:[x,y]},change:{op:'move',id:idm,by:m.slot,at:Date.now()}};
+  });
+  if(err==='conflict')return Response.json({error:'Druga osoba właśnie przestawiła ten przedmiot.',conflict:true,state:await state(env,m)},{status:409,headers:{'Cache-Control':'no-store'}});
   return err||ok(await state(env,m));
  }
  if(method==='POST'&&path==='/api/open-gift'){

@@ -3,10 +3,11 @@
 // Plus the shared wardrobe (#/kolekcja), the meeting celebration and Puszystek.
 // ?demo=1 renders the mock-up data and never writes to the API
 // (?count=N and ?outfit=a,b override the demo values; ?still=1 freezes idle acts).
-import { REWARDS as CATALOG, BY_ID, CATEGORIES, SLOTS, SET_SLOTS, MILESTONES, RARITY, rarityOf, unlockedIds, sanitizeOutfit, claimable, isVisible, isSpecial, isHouse } from './rewards.js';
+import { REWARDS as CATALOG, BY_ID, CATEGORIES, SLOTS, SET_SLOTS, MILESTONES, RARITY, rarityOf, unlockedIds, sanitizeOutfit, claimable, isVisible, isSpecial, isHouse, HOUSE_CATS, ACHIEVEMENTS, achievementOf } from './rewards.js';
 import { puszystekHTML, Puszystek, WEAR, DECOR } from './puszystek.js';
 import { medalSVG } from './medals.js';
-import { ART as HOUSE_ART, DEFAULTS as HOUSE_DEFAULTS, DEFAULT_NAMES, ROOM, layout as houseLayout, roomHTML, HouseLife } from './house.js';
+import { ART as HOUSE_ART, ITEMS as ROOM_ITEMS, ROOM, roomHTML, RoomEditor, HouseLife, positions, placedIds, freeSpot } from './house.js';
+import { check as roomCheck, movable } from './room.js';
 
 const root = document.getElementById('app');
 const params = new URLSearchParams(location.search);
@@ -19,7 +20,7 @@ const S = 687 / 390; // reference screen px per design px
 const reduced = matchMedia('(prefers-reduced-motion: reduce)');
 
 let token = DEMO ? '' : localStorage.getItem(cacheKey) || '';
-let state = null, mode = 'create', route = '', sheet = '', working = false, tileStart = null, collCat = 'all', overlay = null;
+let state = null, mode = 'create', route = '', sheet = '', working = false, tileStart = null, collCat = 'all', collTab = 'pusz', overlay = null;
 let freshItem = '', loginCode = '';
 // the last reward whose state changed here (claimed / worn / pinned), for its state animation
 let justChanged = null;
@@ -140,7 +141,7 @@ function demoState() {
     members: [{ name: 'Miłosz', slot: 1 }, { name: 'Ola', slot: 2 }],
     firstMetAt: (d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`)(new Date(now - 214 * DEMO_DAY)),
     meetings: [{ id: 'd1', occurred_at: now - 3 * DEMO_DAY - 3600000, source: 'auto' }, { id: 'd2', occurred_at: now - 9 * DEMO_DAY, source: 'manual' }],
-    rewards: { unlocked: unlockedIds(n), claimed: demoClaimed ??= CATALOG.filter(r => claimable(r, n, demoOpened) && (params.has('outfit') || !['bowLav', 'week'].includes(r.id))).map(r => r.id), equipped: sanitizeOutfit(demoOutfit, n, demoOpened), opened: demoOpened, version: 1 },
+    rewards: { room: {}, achieved: {}, unlocked: unlockedIds(n), claimed: demoClaimed ??= CATALOG.filter(r => claimable(r, n, demoOpened) && (params.has('outfit') || !['bowLav', 'week'].includes(r.id))).map(r => r.id), equipped: sanitizeOutfit(demoOutfit, n, demoOpened), opened: demoOpened, version: 1 },
     proximity: { stage: 'recorded', reason: 'recorded', radius: 100, distance: 4, strong: true, since: now - 900000, held: 900000, canConfirm: false, recorded: true, me: { on: true, age: 4000, acc: 12 }, partner: { on: true, age: 7000, acc: 14 } },
     push: { available: false, subscribed: false },
   };
@@ -242,7 +243,7 @@ function viewHome(m) {
   return `
   <section class="card hero tap rise" style="--i:0" data-action="meeting" aria-label="Licznik spotkań">
     <img class="plate" src="/img/hero-home.webp" alt="">
-    ${I.heart('hero-heart')}
+    <img class="hero-heart px-heart" src="/img/ui/heart-pink.png" alt=""><img class="hero-corner l" src="/img/ui/heart-white.png" alt=""><img class="hero-corner r" src="/img/ui/heart-white.png" alt="">
     ${m.pin ? `<span class="hero-pin" title="${h(m.pin.name)}">${badgeArt(m.pin)}</span>` : ''}
     <svg class="count" viewBox="0 0 365 92" role="img" aria-label="${m.n}" data-count="${m.n}"><text x="182.5" y="68.5" text-anchor="middle">${m.n}</text></svg>
     <p class="count-label">${plural(m.n, 'spotkanie na żywo', 'spotkania na żywo', 'spotkań na żywo')}</p>
@@ -251,7 +252,7 @@ function viewHome(m) {
       <p class="panel-title">Pasek spotkań</p>
       <p class="ratio"><b>${m.n}</b> / ${m.levelGoal}</p>
       <div class="track" role="progressbar" aria-valuemin="0" aria-valuemax="${m.levelGoal}" aria-valuenow="${m.n}"><div class="fill" data-w="${pct}">${hearts4()}</div></div>
-      <button class="gift ${m.left <= 3 || m.ready.length ? 'ready' : ''}" data-action="${m.ready.length ? 'collection' : 'rewards'}" aria-label="Nagrody${m.ready.length ? `, ${m.ready.length} do odebrania` : ''}">${I.gift}${m.ready.length ? `<span class="dot">${m.ready.length}</span>` : ''}</button>
+      <button class="gift ${m.left <= 3 || m.ready.length ? 'ready' : ''}" data-action="${m.ready.length ? 'collection' : 'rewards'}" aria-label="Nagrody${m.ready.length ? `, ${m.ready.length} do odebrania` : ''}"><img src="/img/ui/ic-gift.png" alt="">${m.ready.length ? `<span class="dot">${m.ready.length}</span>` : ''}</button>
       <p class="hint">${I.flag}Jeszcze ${m.left} ${plural(m.left, 'spotkanie', 'spotkania', 'spotkań')} do kolejnego celu!</p>
     </div>
   </section>
@@ -268,7 +269,7 @@ function viewHome(m) {
   <button class="house-btn" data-action="house" aria-label="Domek Puszystka${m.houseReady.length ? `, ${m.houseReady.length} nowe rzeczy` : ''}"><img class="px-art" src="/img/house/icon.png" alt="">${m.houseReady.length ? `<span class="dot">${m.houseReady.length}</span>` : ''}</button>
   <div class="bubble" ${!DEMO && state && !state.connected ? 'data-action="copy"' : ''}>${phrase(m)}</div>`;
 }
-const hearts4 = () => [8.6, 15.8, 34, 64.6].map((l, i) => `<span class="wh" style="left:${dp(l + 22)};animation-delay:${i * .4}s">${I.heart('', '#fff')}</span>`).join('');
+const hearts4 = () => [8.6, 15.8, 34, 64.6].map((l, i) => `<span class="wh" style="left:${dp(l + 22)};animation-delay:${i * .4}s"><img src="/img/ui/heart-white.png" alt=""></span>`).join('');
 
 function viewRewards(m) {
   const pctLevel = DEMO && !params.has('count') ? 63 : Math.min(100, (m.n / m.levelGoal) * 100);
@@ -397,27 +398,50 @@ function viewDetect(m) {
   <div class="hurra">${c.together ? `<b>Hurra!</b><span>Jesteście razem! ${I.hearts2}</span>` : `<b>Hej!</b><span>Czekam na was ${I.hearts2}</span>`}</div>`;
 }
 
+// Two inventories (Puszystek's things, the house's things) and the achievements
+// that grant them. One shared inventory underneath (D1), split for clarity.
+const COLL_TABS = [['pusz', 'Dla Puszystka'], ['dom', 'Do domku'], ['ach', 'Osiągnięcia']];
 function viewCollection(m) {
+  const ti = Math.max(0, COLL_TABS.findIndex(t => t[0] === collTab));
+  const tabs = `<div class="coll-tabs" role="tablist" aria-label="Nagrody"><span class="ind" style="transform:translateX(${ti * 100}%)"></span>${COLL_TABS.map(([k, v]) => `<button role="tab" aria-selected="${collTab === k}" data-action="coll-tab" data-tab="${k}">${v}</button>`).join('')}</div>`;
+  return `<div class="coll-wrap">${collTab === 'dom' ? collHouse(m, tabs) : collTab === 'ach' ? collAch(m, tabs) : collPusz(m, tabs)}</div>`;
+}
+function collPusz(m, tabs) {
   const visible = CATALOG.filter(r => isVisible(r, m.opened) && !isHouse(r));
   const owned = visible.filter(r => m.claimed.includes(r.id)).length;
-  const worn = m.outfit.map(id => BY_ID[id]).filter(Boolean);
+  const worn = m.outfit.map(id => BY_ID[id]).filter(r => r && !isHouse(r));
   const box = [178, 0, 236];
   const cats = collCat === 'all' ? Object.keys(CATEGORIES).filter(c => c !== 'domek') : [collCat];
-  return `<div class="coll-wrap">
-    <section class="card wardrobe rise" style="--i:0">
+  return `<section class="card wardrobe rise" style="--i:0">
       <img class="plate" src="/img/unlock-rewards.webp" alt="">
       ${themeGlow(m, 0).replace('style="', 'style="bottom:0;')}
-      <h2>Wspólny ekwipunek</h2>
+      <h2>Ekwipunek Puszystka</h2>
       <p class="sub">${h(myName())} + ${h(otherName())} — jedna garderoba Puszystka.</p>
       <span class="stat-pill"><b>${owned}</b> / ${visible.length}</span>
       <div class="worn">${worn.length ? worn.map(r => `<span class="chip">${h(r.name)}</span>`).join('') : '<span class="chip empty">Nic nie ma na sobie</span>'}</div>
       ${m.ready.length ? `<button class="claim-all" data-action="claim-all">${I.gift}Odbierz wszystko (${m.ready.length})</button>` : ''}
       ${puszystekHTML({ pose: 'home', box, outfit: m.outfit, label: 'Puszystek', fresh: freshItem, stagePx: (x, y, w) => `right:${dp(8)};bottom:${dp(-6)};width:${dp(w / S * .74)}` })}
     </section>
+    ${tabs}
     <div class="cats" role="group" aria-label="Kategorie">${[['all', 'Wszystkie'], ...Object.entries(CATEGORIES).filter(([k]) => k !== 'domek')].map(([k, v]) => `<button aria-pressed="${collCat === k}" data-action="coll-cat" data-cat="${k}">${v}</button>`).join('')}</div>
     ${cats.map((c, i) => { const list = visible.filter(r => r.cat === c); return `<section class="card coll-card rise" style="--i:${i + 1}"><h3>${CATEGORIES[c]} <small>${list.filter(r => m.claimed.includes(r.id)).length} z ${list.length}</small></h3><div class="grid">${list.map(r => itemTile(r, m)).join('')}</div></section>`; }).join('')}
-    <p class="coll-note">Nagrody zdobywacie razem. To, co założy jedna osoba, druga zobaczy u siebie.</p>
-  </div>`;
+    <p class="coll-note">Nagrody zdobywacie razem. To, co założy jedna osoba, druga zobaczy u siebie.</p>`;
+}
+function collHouse(m, tabs) {
+  const items = CATALOG.filter(isHouse), inRoom = items.filter(r => m.outfit.includes(r.id)).length;
+  return `${tabs}
+    <div class="house-cta rise" style="--i:0"><img class="px-art" src="/img/house/icon.png" alt=""><div><b>Domek Puszystka</b><small>${inRoom} ${plural(inRoom, 'rzecz', 'rzeczy', 'rzeczy')} w pokoju · ${m.houseReady.length} do odebrania</small></div><button class="btn-main sm" data-action="house-open-edit">Urządzaj</button></div>
+    ${Object.entries(HOUSE_CATS).filter(([k]) => k !== 'specjalne').map(([k, v], i) => { const list = items.filter(r => r.hcat === k); return `<section class="card coll-card rise" style="--i:${i + 1}"><h3>${v} <small>${list.filter(r => m.claimed.includes(r.id)).length} z ${list.length}</small></h3><div class="grid">${list.map(r => itemTile(r, m)).join('')}</div></section>`; }).join('')}
+    <p class="coll-note">Rzeczy do domku ustawiacie w pokoju Puszystka. Układ jest wspólny dla was obojga.</p>`;
+}
+function collAch(m, tabs) {
+  const ach = state?.rewards?.achieved || {};
+  const rows = ACHIEVEMENTS.map(a => {
+    const done = m.n >= a.at, when = ach[a.id] ? dateText(ach[a.id]) : done ? 'Zdobyte' : `Jeszcze ${meetings(a.at - m.n)}`;
+    const chips = a.rewards.map(id => { const r = BY_ID[id]; return `<button data-action="item" data-id="${id}"><span class="k">${isHouse(r) ? 'Domek' : 'Puszystek'}</span>${h(r.name)}</button>`; }).join('');
+    return `<div class="ach ${done ? 'done' : 'locked'}"><span class="ach-num">${a.at}</span><div><b>${h(a.name)}</b><small>${when}</small></div><div class="ach-rw">${chips}</div></div>`;
+  }).join('');
+  return `${tabs}<div class="ach-list">${rows}</div><p class="coll-note">Osiągnięcie to wspólny moment. Każde daje jedną lub kilka nagród: dla Puszystka albo do domku.</p>`;
 }
 
 function viewOnboarding() {
@@ -441,29 +465,92 @@ function viewOnboarding() {
 }
 
 // ------------------------------------------------------------------ Domek Puszystka
-// A full-screen layer over home. The room size is an integer number of device
-// pixels per art pixel (crisp pixel art), as large as the screen allows.
+// The house is its own little game screen over home. The room is the stage, as
+// large as the screen allows at a whole-pixel scale. "Urządzaj" opens the
+// furniture drawer (a side panel on wide screens) and makes things draggable.
 const life = new HouseLife(pusz, reduced);
-let houseEditing = false, houseSig = '', houseOrigin = null;
-function houseInfo(m) {
-  const items = CATALOG.filter(isHouse), placed = Object.keys(houseLayout(m.outfit)).length;
+let houseEditing = false, houseSig = '', houseOrigin = null, houseSel = '', houseCat = 'all', lastMove = null;
+const roomPos = () => positions(model()?.outfit || [], state?.rewards?.room);
+const houseArt = (id, box) => { const a = HOUSE_ART[id], k = Math.max(1, Math.min(6, Math.floor(box / Math.max(a.w, a.h)))); return `<img class="px-art" src="/img/house/${a.src}.png" alt="" style="width:${a.w * k}px;height:${a.h * k}px">`; };
+function houseCard(r, m) {
+  const st = itemStatus(r, m);
+  const label = { locked: `${I.lock}${meetings(r.at)}`, ready: `${I.gift}Do odebrania`, worn: `${I.check}W pokoju`, owned: 'W schowku' }[st];
+  return `<button class="hc ${st}${houseSel === r.id ? ' sel' : ''}" data-action="house-pick" data-id="${r.id}" data-rar="${rarityOf(r)}" aria-label="${h(r.name)}: ${label.replace(/<[^>]+>/g, '')}"><span class="hc-art">${houseArt(r.id, 56)}</span><span class="hc-nm">${h(r.name)}</span><span class="hc-st">${label}</span></button>`;
+}
+function housePanel(m) {
+  const items = CATALOG.filter(isHouse), owned = items.filter(r => m.claimed.includes(r.id)).length;
+  const inRoom = placedIds(m.outfit).length + items.filter(r => ROOM_ITEMS[r.id]?.zone === 'bg' && m.outfit.includes(r.id)).length;
   const next = items.find(r => m.n < r.at);
-  return `<div class="h-prog"><p><b>${items.filter(r => m.claimed.includes(r.id)).length}</b> z ${items.length} rzeczy w domku${next ? ` · kolejna: <em>${h(next.name)}</em> za ${meetings(next.at - m.n)}` : ' · wszystko zdobyte!'}</p>
-    <div class="bar"><i style="width:${(Math.min(1, m.n / (next?.at || m.n || 1)) * 100).toFixed(1)}%"></i></div></div>
-    <div class="h-tray" role="list">${items.map(r => itemTile(r, m, 'mini')).join('')}</div>${placed ? '' : ''}`;
+  if (!houseEditing) return `<div class="hp-view">
+      <div class="hp-sum"><div><b>${owned}</b><span>z ${items.length} rzeczy</span></div><div><b>${inRoom}</b><span>w pokoju</span></div><div><b>${m.houseReady.length}</b><span>do odebrania</span></div></div>
+      ${next ? `<div class="hp-next" data-rar="${rarityOf(next)}"><span class="hc-art">${houseArt(next.id, 46)}</span><div><small>Następna rzecz do domku</small><b>${h(next.name)}</b><em>za ${meetings(next.at - m.n)}</em><i class="bar"><i style="width:${Math.min(100, m.n / next.at * 100).toFixed(1)}%"></i></i></div></div>` : '<p class="hp-done">Wszystko do domku zdobyte ♥</p>'}
+      <button class="btn-main hp-go" data-action="house-edit">Urządzaj pokój ${I.heart('', '#fff')}</button>
+      <div class="hp-wide"><h3>Wyposażenie domku</h3><div class="hp-grid">${items.map(r => houseCard(r, m)).join('')}</div></div>
+    </div>`;
+  const list = items.filter(r => houseCat === 'all' || (houseCat === 'specjalne' ? r.special : r.hcat === houseCat));
+  return `<div class="hp-edit"><div class="hp-tabs" role="tablist" aria-label="Kategorie wyposażenia">${[['all', 'Wszystko'], ...Object.entries(HOUSE_CATS)].map(([k, v]) => `<button role="tab" aria-selected="${houseCat === k}" data-action="house-cat" data-cat="${k}">${v}</button>`).join('')}</div>
+    <div class="hp-grid">${list.map(r => houseCard(r, m)).join('')}</div>
+    <p class="hp-hint">Dotknij rzeczy, żeby ją ustawić, a potem przeciągnij ją w pokoju.</p></div>`;
 }
 function houseScale(box) {
   const dpr = window.devicePixelRatio || 1, cs = getComputedStyle(box);
-  // the room's content box, minus its white frame (3 px each side)
-  const w = box.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight) - 6, hgt = box.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom) - 6;
+  const w = box.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight) - 8, hgt = box.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom) - 8; // minus the plum frame
   const k = Math.max(1, Math.floor(Math.min(w * dpr / ROOM.w, hgt * dpr / ROOM.h)));
   return k / dpr;
 }
-function syncHouse() {
+// buttons over the selected item: undo the last move, put it away, done
+function placeTools(el) {
+  const tools = el.querySelector('.r-tools'), id = houseSel, p = roomPos()[id];
+  if (!houseEditing || !id || !p) { tools.hidden = true; return; }
+  const it = ROOM_ITEMS[id], basic = id === 'bedBasic' || id === 'rugBasic';
+  tools.hidden = false;
+  tools.style.left = `calc(${p[0] + it.w / 2} * var(--px))`;
+  tools.style.top = `calc(${p[1] < 30 ? p[1] + it.h + 2 : p[1] - 2} * var(--px))`;
+  tools.classList.toggle('below', p[1] < 30);
+  tools.innerHTML = `<span class="rt-name">${h(BY_ID[id]?.name || (id === 'bedBasic' ? 'Wiklinowe legowisko' : 'Lawendowy dywanik'))}</span>
+    ${lastMove?.id === id ? '<button data-action="house-undo">Cofnij</button>' : ''}${basic ? '' : '<button data-action="house-stow">Schowaj</button>'}<button class="ok" data-action="house-done">Gotowe</button>`;
+  // keep the toolbar inside the room
+  const room = el.querySelector('.room').getBoundingClientRect(), half = tools.offsetWidth / 2, cx = (p[0] + it.w / 2) * (room.width / ROOM.w);
+  tools.style.left = `${Math.max(half + 2, Math.min(room.width - half - 2, cx))}px`;
+}
+function selectInRoom(el, id) {
+  houseSel = id;
+  el.querySelectorAll('.room .r-it').forEach(i => i.classList.toggle('sel', i.dataset.item === id));
+  el.querySelectorAll('.hc').forEach(c => c.classList.toggle('sel', c.dataset.id === id));
+  placeTools(el);
+}
+const editor = new RoomEditor({
+  onSelect: (id, dragging) => { const el = document.getElementById('house'); if (el) selectInRoom(el, id); if (dragging) life.stop(); },
+  onMove: async (id, p, prev) => { state.rewards.room = { ...(state.rewards.room || {}), [id]: p }; if (await moveItem(id, p, prev)) { syncHouse(); life.cheer(); } },
+  onInvalid: reason => toast(h(reason)),
+});
+async function moveItem(id, p, prev) {
+  if (DEMO) { state.rewards.room = { ...(state.rewards.room || {}), [id]: p }; lastMove = { id, prev }; return true; }
+  try { state = await request('/api/room-move', { id, x: p[0], y: p[1], expect: prev }); saveState(); lastMove = { id, prev }; return true; }
+  catch (e) {
+    if (e.data?.conflict) { state = e.data.state; toast(`${h(otherName())} właśnie przestawił(a) ten przedmiot ♡`); }
+    else { state.rewards.room = { ...(state.rewards.room || {}), [id]: prev }; toast(h(e.message)); }
+    syncHouse(true); return false;
+  }
+}
+// put a house item into the room: claim it if needed, place it (swapping what
+// stood in its place), find it a free spot, select it
+async function placeHouse(id) {
+  const r = BY_ID[id];
+  if (!model().claimed.includes(id)) await claim(id);
+  if (!model().outfit.includes(id) && !await changeOutfit('equip', id)) return;
+  saveState(); freshItem = id;
+  if (!movable(id)) { houseSel = ''; syncHouse(); life.cheer(); return toast(`${h(r.name)} — w domku ♥`); }
+  const pos = roomPos(), here = pos[id];
+  if (here && !roomCheck(id, here, pos).ok) await moveItem(id, freeSpot(id, pos), here);
+  houseSel = id; syncHouse(); life.cheer();
+  toast(`${h(r.name)} — przeciągnij, żeby przestawić ♡`);
+}
+function syncHouse(force = false) {
   let el = document.getElementById('house');
   if (route !== 'house' || !state) {
     if (el && !el.classList.contains('out')) { el.classList.add('out'); life.stop(); setTimeout(() => el.remove(), 320); if (!overlay) pusz.mount(document.querySelector('.view:not(.leave) .pusz')); }
-    houseEditing = false; houseSig = '';
+    houseEditing = false; houseSig = ''; houseSel = '';
     return;
   }
   const m = model();
@@ -472,44 +559,30 @@ function syncHouse() {
     el = document.createElement('div'); el.id = 'house'; el.className = 'house'; el.setAttribute('role', 'dialog'); el.setAttribute('aria-label', 'Domek Puszystka');
     if (houseOrigin) { el.style.setProperty('--ox', houseOrigin[0] + 'px'); el.style.setProperty('--oy', houseOrigin[1] + 'px'); }
     el.innerHTML = `<header class="h-top"><button class="h-back" data-action="house-back" aria-label="Wróć">${I.back}</button><h2>Domek Puszystka</h2><button class="h-edit" data-action="house-edit" aria-pressed="false">Urządzaj</button></header>
-      <div class="room-wrap"><div class="room"></div></div><div class="h-panel"></div>`;
+      <div class="h-main"><div class="room-wrap"><div class="room-frame"><div class="room"></div><div class="r-tools" hidden></div></div></div><aside class="h-panel"></aside></div>`;
     document.body.appendChild(el);
+    editor.attach(el.querySelector('.room'), roomPos);
   }
   el.classList.toggle('editing', houseEditing);
   const ed = el.querySelector('.h-edit'); ed.textContent = houseEditing ? 'Gotowe' : 'Urządzaj'; ed.setAttribute('aria-pressed', String(houseEditing));
-  el.querySelector('.h-panel').innerHTML = houseInfo(m);
-  const by = houseLayout(m.outfit);
-  const sig = JSON.stringify([by, houseEditing, m.outfit]);
+  el.querySelector('.h-panel').innerHTML = housePanel(m);
   const room = el.querySelector('.room');
   room.style.setProperty('--px', houseScale(el.querySelector('.room-wrap')) + 'px');
-  if (sig !== houseSig) {
+  el.querySelector('.room-frame').style.setProperty('--px', room.style.getPropertyValue('--px'));
+  const pos = roomPos();
+  const sig = JSON.stringify([pos, m.outfit]);
+  if (force || sig !== houseSig) {
     const fresh = freshItem && isHouse(BY_ID[freshItem]) ? freshItem : '';
-    room.innerHTML = roomHTML(m.outfit, { editing: houseEditing, fresh, outfit: m.outfit });
+    room.innerHTML = roomHTML({ outfit: m.outfit, room: state.rewards?.room, fresh, sel: houseEditing ? houseSel : '' });
     houseSig = sig;
     if (!overlay) pusz.mount(room.querySelector('.pusz'));
-    life.mount(room.querySelector('.hcat'), by);
-    if (fresh) { life.cheer(BY_ID[fresh].slot); freshItem = ''; }
+    life.mount(room.querySelector('.hcat'), pos);
+    if (fresh) freshItem = '';
   }
+  if (!pos[houseSel]) houseSel = '';
+  selectInRoom(el, houseEditing ? houseSel : '');
 }
-addEventListener('resize', () => { const el = document.getElementById('house'); if (el) el.querySelector('.room').style.setProperty('--px', houseScale(el.querySelector('.room-wrap')) + 'px'); });
-// a house sprite at the largest whole-pixel scale that fits `box` css px
-const houseArt = (id, box) => { const a = HOUSE_ART[id], k = Math.max(1, Math.min(6, Math.floor(box / Math.max(a.w, a.h)))); return `<img class="px-art" src="/img/house/${a.src}.png" alt="" style="width:${a.w * k}px;height:${a.h * k}px">`; };
-// one place in the room: every item that fits there, with its state and action
-function slotSheet(slot, m) {
-  const by = houseLayout(m.outfit), cur = by[slot];
-  const items = CATALOG.filter(r => r.slot === slot);
-  const def = HOUSE_DEFAULTS[slot];
-  const art = id => `<img class="px-art" src="/img/house/${HOUSE_ART[id].src}.png" alt="">`;
-  const row = (id, name, state, btn) => `<div class="hs-row${(cur === id || (!cur && id === def)) ? ' on' : ''}"><span class="hs-art">${art(id)}</span><div><b>${h(name)}</b><small>${state}</small></div>${btn}</div>`;
-  const rows = [];
-  if (def) rows.push(row(def, DEFAULT_NAMES[def], !cur ? 'Stoi w domku' : 'Podstawowe', !cur ? '' : `<button class="btn-soft sm" data-action="unequip" data-id="${cur}">Ustaw</button>`));
-  for (const r of items) {
-    const st = itemStatus(r, m);
-    rows.push(row(r.id, r.name, st === 'locked' ? `${I.lock} za ${meetings(r.at - m.n)}` : st === 'ready' ? 'Do odebrania' : st === 'worn' ? 'Stoi w domku' : 'W schowku',
-      st === 'locked' ? '' : st === 'ready' ? `<button class="btn-soft sm hot" data-action="claim" data-id="${r.id}">Odbierz</button>` : st === 'worn' ? `<button class="btn-soft sm" data-action="unequip" data-id="${r.id}">Schowaj</button>` : `<button class="btn-soft sm" data-action="equip" data-id="${r.id}">Ustaw</button>`));
-  }
-  return `<h2>${SLOTS[slot]}</h2><p>Co ma tu stać? Zmiana jest od razu widoczna w domku u was obojga.</p>${rows.join('')}`;
-}
+addEventListener('resize', () => { const el = document.getElementById('house'); if (el) { const px = houseScale(el.querySelector('.room-wrap')) + 'px'; el.querySelector('.room').style.setProperty('--px', px); el.querySelector('.room-frame').style.setProperty('--px', px); placeTools(el); } });
 
 // ------------------------------------------------------------------ render + transitions
 const ROUTES = { '': 'home', '#/nagrody': 'rewards', '#/spotkanie': 'detect', '#/kolekcja': 'collection', '#/domek': 'house' };
@@ -802,19 +875,32 @@ function renderSheet(quiet = false) {
   if (!sheet) return document.getElementById('sheet')?.remove();
   const m = model();
   let c = '';
-  if (sheet === 'settings') c = `<h2>Ustawienia</h2><p>Wszystko, czego potrzebujecie, w jednym miejscu.</p>
-    <div class="set"><div><b>Wasza para</b><small>${h(myName())} ♡ ${state?.connected ? h(otherName()) : 'czeka na drugą osobę'}</small></div>${I.heart('emo')}</div>
-    <div class="set"><div><b>Twoje imię</b><small>Widzicie je oboje w nagłówku.</small></div><button class="btn-soft" data-action="name">${h(myName())}</button></div>
-    <div class="set"><div><b>Status wykrywania spotkań</b><small>${h(statusLine(m))}</small></div><button class="btn-soft" data-action="diag">Pokaż</button></div>
-    <div class="set"><div><b>Wspólny ekwipunek${m?.ready.length ? `<span class="dot">${m.ready.length}</span>` : ''}</b><small>${m ? `${m.claimed.length} w ekwipunku · wspólny dla was obojga` : ''}</small></div><button class="btn-soft" data-action="collection">Otwórz</button></div>
-    <div class="set"><div><b>Data pierwszego spotkania</b><small>Od niej liczymy dni razem.</small></div><button class="btn-soft" data-action="first-date">${h(state?.firstMetAt || 'Ustaw')}</button></div>
-    <div class="set"><div><b>Zasięg spotkania</b><small>Przy słabszym GPS: do tej odległości potwierdzacie oboje.</small></div><button class="btn-soft" data-action="radius">${m?.pr.radius || 100} m</button></div>
-    <div class="set"><div><b>Zapisz spotkanie</b><small>Dodajcie spotkanie ręcznie.</small></div><button class="btn-soft" data-action="meeting">Dodaj</button></div>
-    ${state && !state.connected ? `<div class="set"><div><b>Kod zaproszenia</b><small>Druga osoba wybiera „Dołącz z kodem”.</small><div class="code">${h(state.code || '')}</div></div><button class="btn-soft" data-action="copy">Kopiuj</button></div>` : ''}
-    <div class="set"><div><b>Logowanie na innym telefonie</b><small>Jednorazowo pokażemy Twój kod logowania.</small></div><button class="btn-soft" data-action="login-code">Pokaż kod</button></div>
-    <p>Imiona, licznik, nagrody i ekwipunek są na wspólnym serwerze. Pozycja jest tymczasowa — nie tworzymy historii lokalizacji.</p>
-    <button class="btn-soft wide" data-action="history">Historia spotkań</button><div style="height:8px"></div>
+  if (sheet === 'settings') {
+    const ic = (n, tone = '') => `<span class="set-ic ${tone}"><img src="/img/ui/ic-${n}.png" alt=""></span>`;
+    const row = (icon, title, sub, btn) => `<div class="set">${icon}<div><b>${title}</b><small>${sub}</small></div>${btn}</div>`;
+    c = `<h2>Ustawienia</h2><p>Wszystko, czego potrzebujecie, w jednym miejscu.</p>
+    <p class="sec-h">Wasza para</p><div class="sec">
+      ${row(ic('heart'), 'Para', `${h(myName())} ♡ ${state?.connected ? h(otherName()) : 'czeka na drugą osobę'}`, '')}
+      ${row(ic('heart', 'lav'), 'Twoje imię', 'Widzicie je oboje w nagłówku.', `<button class="btn-soft" data-action="name">${h(myName())}</button>`)}
+      ${row(ic('cal', 'lav'), 'Data pierwszego spotkania', 'Od niej liczymy dni razem.', `<button class="btn-soft" data-action="first-date">${h(state?.firstMetAt || 'Ustaw')}</button>`)}
+      ${state && !state.connected ? `<div class="set">${ic('key', 'gold')}<div><b>Kod zaproszenia</b><small>Druga osoba wybiera „Dołącz z kodem”.</small><div class="code">${h(state.code || '')}</div></div><button class="btn-soft" data-action="copy">Kopiuj</button></div>` : ''}
+    </div>
+    <p class="sec-h">Spotkania</p><div class="sec">
+      ${row(ic('clock'), 'Zapisz spotkanie', 'Dodajcie spotkanie ręcznie.', '<button class="btn-soft" data-action="meeting">Dodaj</button>')}
+      ${row(ic('cal'), 'Historia spotkań', 'Ta sama na obu telefonach.', '<button class="btn-soft" data-action="history">Pokaż</button>')}
+      ${row(ic('radar', 'mint'), 'Status wykrywania spotkań', h(statusLine(m)), '<button class="btn-soft" data-action="diag">Pokaż</button>')}
+      ${row(ic('pin', 'mint'), 'Zasięg spotkania', 'Przy słabszym GPS potwierdzacie oboje.', `<button class="btn-soft" data-action="radius">${m?.pr.radius || 100} m</button>`)}
+    </div>
+    <p class="sec-h">Puszystek i domek</p><div class="sec">
+      ${row(ic('bag', 'gold'), `Ekwipunek Puszystka${m?.ready.length ? `<span class="dot">${m.ready.length}</span>` : ''}`, 'Korony, kokardki, efekty i odznaki.', '<button class="btn-soft" data-action="collection">Otwórz</button>')}
+      ${row(ic('house', 'gold'), `Domek Puszystka${m?.houseReady.length ? `<span class="dot">${m.houseReady.length}</span>` : ''}`, 'Meble i dekoracje do wspólnego pokoju.', '<button class="btn-soft" data-action="house">Wejdź</button>')}
+    </div>
+    <p class="sec-h">Konto</p><div class="sec">
+      ${row(ic('key', 'lav'), 'Logowanie na innym telefonie', 'Jednorazowo pokażemy Twój kod logowania.', '<button class="btn-soft" data-action="login-code">Pokaż kod</button>')}
+    </div>
+    <p class="set-note">Imiona, licznik, nagrody, ekwipunek i domek są na wspólnym serwerze. Pozycja jest tymczasowa — nie tworzymy historii lokalizacji.</p>
     <button class="btn-soft wide btn-danger" data-action="logout">Odłącz ten telefon</button>`;
+  }
   else if (sheet === 'history') c = `<h2>Wasze spotkania</h2><p>Ta sama historia na obu telefonach. Pomyłki można usunąć.</p>
     ${state.meetings.length ? state.meetings.map(e => `<div class="hist"><div><b>${dateText(e.occurred_at)}</b><small>${e.source === 'auto' ? 'Wykryte automatycznie' : 'Dodane ręcznie'}</small></div><button data-action="delete" data-id="${h(e.id)}">Usuń</button></div>`).join('') : '<div class="empty">Jeszcze nie zapisaliście żadnego spotkania.</div>'}`;
   else if (sheet === 'first-date') c = `<h2>Wasz pierwszy dzień</h2><p>Ustawcie datę pierwszego spotkania — oboje zobaczycie ten sam licznik dni.</p>
@@ -840,7 +926,6 @@ function renderSheet(quiet = false) {
     <div class="login-code">${h(loginCode.replace(/(.{4})(?=.)/g, '$1 '))}</div>
     <p>Kod jest tylko Twój — nie wysyłaj go nikomu. Wygenerowanie nowego unieważnia poprzedni.</p>
     <button class="btn-main" data-action="copy-login">Kopiuj kod ${I.heart('', '#fff')}</button>`;
-  else if (sheet.startsWith('hslot:')) c = slotSheet(sheet.slice(6), m);
   else if (sheet.startsWith('item:')) c = itemSheet(BY_ID[sheet.slice(5)], m);
   const prevScroll = document.querySelector('#sheet .sheet-body')?.scrollTop || 0;
   document.getElementById('sheet')?.remove();
@@ -910,13 +995,25 @@ async function act(action, el) {
     else if (['settings', 'history', 'first-date', 'location-info', 'meeting', 'radius', 'diag', 'name'].includes(action)) { if (!state && action !== 'location-info') return; openSheet(action); }
     else if (action === 'check-now') await checkNow();
     else if (action === 'house') {
+      closeSheet();
       const r = el.getBoundingClientRect(); houseOrigin = [r.left + r.width / 2, r.top + r.height / 2];
       if (!reduced.matches && pusz.el?.querySelector('.pz-paw')) { pusz.play('wave'); await new Promise(res => setTimeout(res, 650)); }
       go('house');
     }
     else if (action === 'house-back') go('home');
-    else if (action === 'house-edit') { houseEditing = !houseEditing; syncHouse(); if (houseEditing) toast('Dotknij miejsca w pokoju, żeby coś ustawić ♡'); }
-    else if (action === 'house-slot') openSheet('hslot:' + el.dataset.slot);
+    else if (action === 'house-edit') { houseEditing = !houseEditing; if (!houseEditing) houseSel = ''; syncHouse(true); }
+    else if (action === 'house-cat') { houseCat = el.dataset.cat; syncHouse(); document.querySelector('.hp-tabs [aria-selected="true"]')?.scrollIntoView({ inline: 'center', block: 'nearest', behavior: reduced.matches ? 'auto' : 'smooth' }); }
+    else if (action === 'house-pick') {
+      const r = BY_ID[el.dataset.id], st = itemStatus(r, model());
+      if (!houseEditing && st !== 'locked') { houseEditing = true; syncHouse(true); }
+      if (st === 'locked') return openSheet('item:' + r.id);
+      if (st === 'worn' && movable(r.id)) { const hs = document.getElementById('house'); selectInRoom(hs, r.id); hs.querySelector(`.r-it[data-item="${r.id}"]`)?.animate?.([{ translate: '0 0' }, { translate: '0 -4px' }, { translate: '0 0' }], { duration: 320 }); return; }
+      if (st === 'worn') return toast(`${h(r.name)} już jest w domku ♡`);
+      await placeHouse(r.id);
+    }
+    else if (action === 'house-stow') { const id = houseSel; if (!id) return; houseSel = ''; if (await changeOutfit('unequip', id)) { saveState(); syncHouse(true); toast(`${h(BY_ID[id].name)} — w schowku`); } }
+    else if (action === 'house-undo') { const mv = lastMove; if (!mv) return; lastMove = null; const cur = roomPos()[mv.id]; if (await moveItem(mv.id, mv.prev, cur)) { lastMove = null; syncHouse(); } }
+    else if (action === 'house-done') { houseSel = ''; selectInRoom(document.getElementById('house'), ''); }
     else if (action === 'close') closeSheet();
     else if (action === 'cat') { if (route === 'house') life.stop(); const pick = await pusz.tap(); if (pick === 'hop' || pick === 'hug') burst(el, 4, 120); if (route === 'house') life.timer = setTimeout(() => life.next(), 5000); }
     else if (action === 'super') { burst(document.querySelector('.view:not(.leave) .pz-body'), 9); pusz.celebrate('reward'); el.animate?.([{ transform: 'scale(1)' }, { transform: 'scale(1.08)' }, { transform: 'scale(1)' }], { duration: 400, easing: 'ease-out' }); }
@@ -961,6 +1058,8 @@ async function act(action, el) {
     }
     else if (action === 'copy-login') { await navigator.clipboard.writeText(loginCode); toast('Kod logowania skopiowany'); }
     else if (action === 'coll-cat') { collCat = el.dataset.cat; render('collection'); }
+    else if (action === 'coll-tab') { collTab = el.dataset.tab; render('collection'); document.querySelector('.app')?.scrollTo?.({ top: 0 }); }
+    else if (action === 'house-open-edit') { houseEditing = true; go('house'); }
     else if (action === 'tile-prev' || action === 'tile-next') {
       const next = Math.max(0, Math.min(FEATURED.length - 4, tileStart + (action === 'tile-next' ? 1 : -1)));
       if (next === tileStart) { el.animate?.([{ transform: 'translateX(0)' }, { transform: `translateX(${action === 'tile-next' ? 4 : -4}px)` }, { transform: 'translateX(0)' }], { duration: 260 }); return; }

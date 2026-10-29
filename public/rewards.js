@@ -16,11 +16,15 @@ export const SLOTS = {
   pin: 'Odznaka pary',
   // Puszystek's house: one item per place in the room
   hBed: 'Łóżeczko', hRug: 'Dywan', hWall: 'Na ścianie', hWindow: 'Okno', hShelf: 'Półka', hPlant: 'Roślina',
-  hLamp: 'Lampka', hToy: 'Kącik zabaw', hCushion: 'Poduszka', hLights: 'Pod sufitem', hPaper: 'Wystrój ścian',
+  hLamp: 'Lampka', hToy: 'Kącik zabaw', hCushion: 'Poduszka', hLights: 'Pod sufitem', hPaper: 'Tapeta',
+  hStand: 'Stolik', hArt: 'Obraz', hSeat: 'Siedzisko', hFloor: 'Podłoga',
 };
 // slots that are "set" (Ustaw) rather than worn (Załóż)
-export const SET_SLOTS = ['effect', 'decor', 'theme', 'pin', 'hBed', 'hRug', 'hWall', 'hWindow', 'hShelf', 'hPlant', 'hLamp', 'hToy', 'hCushion', 'hLights', 'hPaper'];
+export const SET_SLOTS = ['effect', 'decor', 'theme', 'pin', 'hBed', 'hRug', 'hWall', 'hWindow', 'hShelf', 'hPlant', 'hLamp', 'hToy', 'hCushion', 'hLights', 'hPaper', 'hStand', 'hArt', 'hSeat', 'hFloor'];
 export const isHouse = r => r?.cat === 'domek';
+// the house inventory's own categories
+export const HOUSE_CATS = { meble: 'Meble', sciany: 'Ściany i podłogi', dekoracje: 'Dekoracje', rosliny: 'Rośliny', swiatlo: 'Oświetlenie', specjalne: 'Specjalne' };
+export const houseCat = r => r.hcat;
 
 export const CATEGORIES = {
   nakrycia: 'Korony i nakrycia głowy',
@@ -88,22 +92,36 @@ export const REWARDS = [
   { id: 'fireworks', at: 150, cat: 'efekty', slot: 'effect', name: 'Fajerwerki', desc: 'Pikselowe fajerwerki nad łąką.', hidden: 'bigGift' },
   { id: 'legend', at: 200, cat: 'odznaki', slot: 'pin', name: 'Legenda Razem', desc: 'Dwieście spotkań. Nic więcej nie trzeba mówić.', special: true },
   // Domek Puszystka: furniture and decorations for the shared room
-  { id: 'garland', at: 1, cat: 'domek', slot: 'hWall', name: 'Girlanda serduszek', desc: 'Pierwsza dekoracja domku: kolorowe serduszka nad łóżeczkiem.' },
-  { id: 'cushion', at: 3, cat: 'domek', slot: 'hCushion', name: 'Poduszka-serduszko', desc: 'Miękka poduszka do siedzenia przy dywaniku.' },
-  { id: 'plant', at: 5, cat: 'domek', slot: 'hPlant', name: 'Roślinka w doniczce', desc: 'Mały zielony przyjaciel w różowej doniczce.' },
-  { id: 'lamp', at: 8, cat: 'domek', slot: 'hLamp', name: 'Lampka-grzybek', desc: 'Ciepłe światło na wspólne wieczory.' },
-  { id: 'rugHeart', at: 10, cat: 'domek', slot: 'hRug', name: 'Dywan w serduszko', desc: 'Nowy dywan w kształcie serca.' },
-  { id: 'bedRoyal', at: 15, cat: 'domek', slot: 'hBed', name: 'Łóżeczko z zagłówkiem', desc: 'Ulepszone łóżeczko z kołderką w serduszka.' },
-  { id: 'curtains', at: 20, cat: 'domek', slot: 'hWindow', name: 'Zasłonki w kwiatki', desc: 'Zasłonki do okna z widokiem na ogród.' },
-  { id: 'toys', at: 25, cat: 'domek', slot: 'hToy', name: 'Kącik zabawek', desc: 'Kłębek włóczki i klocki do zabawy.' },
-  { id: 'shelf', at: 30, cat: 'domek', slot: 'hShelf', name: 'Półka na pamiątki', desc: 'Specjalny mebel: ramka, puchar i słoik serduszek.', special: true },
-  { id: 'monstera', at: 40, cat: 'domek', slot: 'hPlant', name: 'Monstera', desc: 'Duża roślina dla zgranej pary.' },
-  { id: 'starlights', at: 50, cat: 'domek', slot: 'hLights', name: 'Gwiezdne światełka', desc: 'Wyjątkowa dekoracja: gwiazdki migoczące pod sufitem.', special: true },
-  { id: 'rugCloud', at: 75, cat: 'domek', slot: 'hRug', name: 'Dywan-chmurka', desc: 'Puszysty dywan miękki jak obłok.' },
-  { id: 'wallLavender', at: 100, cat: 'domek', slot: 'hPaper', name: 'Lawendowa sypialnia', desc: 'Unikalny wystrój: lawendowe ściany w gwiazdki i nocny widok z okna.', special: true },
+  { id: 'garland', at: 1, cat: 'domek', hcat: 'dekoracje', slot: 'hWall', name: 'Girlanda serduszek', desc: 'Pierwsza dekoracja domku: kolorowe serduszka nad łóżeczkiem.' },
+  { id: 'cushion', at: 3, cat: 'domek', hcat: 'meble', slot: 'hCushion', name: 'Poduszka-serduszko', desc: 'Miękka poduszka do siedzenia przy dywaniku.' },
+  { id: 'plant', at: 5, cat: 'domek', hcat: 'rosliny', slot: 'hPlant', name: 'Roślinka w doniczce', desc: 'Mały zielony przyjaciel w różowej doniczce.' },
+  { id: 'lamp', at: 8, cat: 'domek', hcat: 'swiatlo', slot: 'hLamp', name: 'Lampka-grzybek', desc: 'Ciepłe światło na wspólne wieczory.' },
+  { id: 'rugHeart', at: 10, cat: 'domek', hcat: 'sciany', slot: 'hRug', name: 'Dywan w serduszko', desc: 'Nowy dywan w kształcie serca.' },
+  { id: 'bedRoyal', at: 15, cat: 'domek', hcat: 'meble', slot: 'hBed', name: 'Łóżeczko z zagłówkiem', desc: 'Ulepszone łóżeczko z kołderką w serduszka.' },
+  { id: 'curtains', at: 20, cat: 'domek', hcat: 'dekoracje', slot: 'hWindow', name: 'Zasłonki w kwiatki', desc: 'Zasłonki do okna z widokiem na ogród.' },
+  { id: 'toys', at: 25, cat: 'domek', hcat: 'dekoracje', slot: 'hToy', name: 'Kącik zabawek', desc: 'Kłębek włóczki i klocki do zabawy.' },
+  { id: 'shelf', at: 30, cat: 'domek', hcat: 'meble', slot: 'hShelf', name: 'Półka na pamiątki', desc: 'Specjalny mebel: ramka, puchar i słoik serduszek.', special: true },
+  { id: 'monstera', at: 40, cat: 'domek', hcat: 'rosliny', slot: 'hPlant', name: 'Monstera', desc: 'Duża roślina dla zgranej pary.' },
+  { id: 'starlights', at: 50, cat: 'domek', hcat: 'swiatlo', slot: 'hLights', name: 'Gwiezdne światełka', desc: 'Wyjątkowa dekoracja: gwiazdki migoczące pod sufitem.', special: true },
+  { id: 'rugCloud', at: 75, cat: 'domek', hcat: 'sciany', slot: 'hRug', name: 'Dywan-chmurka', desc: 'Puszysty dywan miękki jak obłok.' },
+  { id: 'wallLavender', at: 100, cat: 'domek', hcat: 'sciany', slot: 'hPaper', name: 'Lawendowa sypialnia', desc: 'Unikalny wystrój: lawendowe ściany w gwiazdki i nocny widok z okna.', special: true },
+  { id: 'nightstand', at: 12, cat: 'domek', hcat: 'meble', slot: 'hStand', name: 'Stolik nocny', desc: 'Drewniany stolik z szufladkami. Lampka chętnie na nim stanie.' },
+  { id: 'painting', at: 22, cat: 'domek', hcat: 'dekoracje', slot: 'hArt', name: 'Obrazek z łąki', desc: 'Dwa serduszka na łące — wasz pierwszy wspólny obraz.' },
+  { id: 'floorHerring', at: 35, cat: 'domek', hcat: 'sciany', slot: 'hFloor', name: 'Parkiet w jodełkę', desc: 'Miodowa podłoga układana w jodełkę.' },
+  { id: 'wallMint', at: 45, cat: 'domek', hcat: 'sciany', slot: 'hPaper', name: 'Miętowa tapeta', desc: 'Świeże, miętowe ściany w listki i różowa boazeria.' },
+  { id: 'beanbag', at: 55, cat: 'domek', hcat: 'meble', slot: 'hSeat', name: 'Lawendowa pufa', desc: 'Miękka pufa do wspólnego leniuchowania.' },
 ];
 
 export const BY_ID = Object.fromEntries(REWARDS.map(r => [r.id, r]));
+
+// Achievements are moments of shared progress ("10 wspólnych spotkań"); each
+// one grants one or more rewards (for Puszystek and/or the house). A reward
+// belongs to the achievement of its source and threshold.
+const ACH_NAMES = { 1: 'Pierwsze spotkanie', 3: 'Trzecia randka', 5: 'Piątka razem', 7: 'Pierwszy tydzień', 10: 'Dziesięć spotkań', 20: 'Dwadzieścia spotkań', 25: 'Ćwierć setki', 30: 'Trzydzieści spotkań', 50: 'Pięćdziesiątka', 75: 'Siedemdziesiąt pięć', 100: 'Setka razem', 150: 'Sto pięćdziesiąt', 200: 'Legenda Razem' };
+export const achievementOf = r => `${r.source || 'meetings'}-${r.at}`;
+export const ACHIEVEMENTS = [...new Map(REWARDS.filter(r => !r.hidden).map(r => [achievementOf(r), r])).values()]
+  .map(r => ({ id: achievementOf(r), source: r.source || 'meetings', at: r.at, name: ACH_NAMES[r.at] || `${r.at} wspólnych spotkań`, rewards: REWARDS.filter(x => !x.hidden && achievementOf(x) === achievementOf(r)).map(x => x.id) }))
+  .sort((a, b) => a.at - b.at);
 // big milestones get a special Puszystek celebration
 export const MILESTONES = [10, 25, 50, 100, 150, 200];
 export const isSpecial = r => !!r && (r.special || MILESTONES.includes(r.at));
