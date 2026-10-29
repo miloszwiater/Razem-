@@ -1,21 +1,24 @@
 // Razem — frontend. Three screens (home, rewards, detection) drawn on a 390x860
 // design stage; positions come from the reference PNGs (screen px / 1.7615).
-// Plus the wardrobe (#/kolekcja), the meeting celebration and Puszystek.
+// Plus the shared wardrobe (#/kolekcja), the meeting celebration and Puszystek.
 // ?demo=1 renders the mock-up data and never writes to the API
 // (?count=N and ?outfit=a,b override the demo values; ?still=1 freezes idle acts).
-import { REWARDS as CATALOG, BY_ID, CATEGORIES, SLOTS, MILESTONES, tierOf, unlockedIds, sanitizeOutfit } from './rewards.js';
-import { puszystekHTML, Puszystek, WEAR } from './puszystek.js';
+import { REWARDS as CATALOG, BY_ID, CATEGORIES, SLOTS, SET_SLOTS, MILESTONES, tierOf, unlockedIds, sanitizeOutfit, claimable, isVisible, isSpecial } from './rewards.js';
+import { puszystekHTML, Puszystek, WEAR, DECOR } from './puszystek.js';
 
 const root = document.getElementById('app');
 const params = new URLSearchParams(location.search);
 const DEMO = params.has('demo');
 const STILL = params.has('still');
 const cacheKey = 'razem-session-v1';
+// last server state, only to paint instantly on launch; D1 stays the source of truth
+const stateKey = 'razem-state-cache-v1';
 const S = 687 / 390; // reference screen px per design px
 const reduced = matchMedia('(prefers-reduced-motion: reduce)');
 
 let token = DEMO ? '' : localStorage.getItem(cacheKey) || '';
 let state = null, mode = 'create', route = '', sheet = '', locTimer = null, geoEnabled = false, working = false, tileStart = null, collCat = 'all', overlay = null;
+let freshItem = '', loginCode = '';
 const pref = (k, d) => { try { const v = localStorage.getItem('razem-' + k); return v === null ? d : v === '1'; } catch { return d; } };
 const setPref = (k, v) => { try { localStorage.setItem('razem-' + k, v ? '1' : '0'); } catch { } };
 let notifyOn = DEMO || pref('notify', false), syncOn = DEMO || pref('sync', true);
@@ -65,27 +68,34 @@ const DECO = {
 // where Puszystek stands on each screen: [x, y, width] in reference screen px
 const SPOT = { home: [216, 1211, 242], rew: [96, 1318, 236], detCheer: [213, 1273, 241], detSit: [222, 1282, 236] };
 const deco = set => DECO[set].map(([n, x, y, w], i) => `<img class="px ${n.includes('spark') ? 'deco-spark' : 'deco-heart'}" src="/img/${n}.png" alt="" style="${at(x, y, w)};--d:${(-i * 0.73).toFixed(2)}s">`).join('');
-const cat = (spot, pose = 'home', label = 'Puszystek — dotknij', outfit = model()?.outfit || []) => puszystekHTML({ pose, box: SPOT[spot], outfit, label, stagePx: at });
-const sunsetGlow = (m, top) => m?.outfit.includes('sunset') ? `<span class="sunset-glow" style="top:${dp(top / S)};height:${dp((1515 - top) / S)}"></span>` : '';
+const cat = (spot, pose = 'home', label = 'Puszystek — dotknij', outfit = model()?.outfit || []) => puszystekHTML({ pose, box: SPOT[spot], outfit, label, stagePx: at, fresh: freshItem });
+const themeOf = m => m?.outfit.find(id => BY_ID[id]?.slot === 'theme') || '';
+const themeGlow = (m, top) => themeOf(m) ? `<span class="theme-glow ${themeOf(m)}" style="top:${dp(top / S)};height:${dp((1515 - top) / S)}"></span>` : '';
 
 // ------------------------------------------------------------------ rewards presentation
-const TILE_ART = { crown: 'tile-crown', badge: 'tile-heart', sunset: 'tile-sky', gift: 'tile-gift', bigGift: 'tile-gift' };
+const TILE_ART = { crown: 'tile-crown', badge: 'tile-heart', sunset: 'tile-sky', lavender: 'tile-sky', gift: 'tile-gift', bigGift: 'tile-gift' };
+const TILE_FILTER = { bigGift: 'hue-rotate(200deg) saturate(1.2)', lavender: 'hue-rotate(40deg) saturate(.8)' };
 const LABEL = { crown: '<b>Korona<br>dla Puszystka</b>', badge: 'Nowa<br>odznaka', sunset: '<b>Motyw tła</b><br>„Różowy zachód”', gift: 'Niespodzianka' };
 const FX_ART = { hearts: 'home-heart-0', butterflies: 'items/butterfly', stars: 'home-spark-5', confetti: 'home-heart-2', fireworks: 'items/firework' };
 const BADGE_NUM = { first: 1, week: 7, seventy5: 75, hundred: 100, legend: 200 };
-const TILE_BG = { korony: 'linear-gradient(160deg,#fff4dc,#ffe2ef)', akcesoria: 'linear-gradient(160deg,#fff5f8,#fde3ef)', efekty: 'linear-gradient(160deg,#f3efff,#fde6f2)', odznaki: 'linear-gradient(160deg,#fff9e8,#fdf0f6)', niespodzianki: 'linear-gradient(160deg,#fff1f6,#efe9ff)' };
+const TILE_BG = { nakrycia: 'linear-gradient(160deg,#fff4dc,#ffe2ef)', ozdoby: 'linear-gradient(160deg,#fff1f7,#f6e6ff)', ubranka: 'linear-gradient(160deg,#eefaf5,#fde8f1)', akcesoria: 'linear-gradient(160deg,#fff5f8,#fde3ef)', efekty: 'linear-gradient(160deg,#f3efff,#fde6f2)', odznaki: 'linear-gradient(160deg,#fff9e8,#fdf0f6)', dekoracje: 'linear-gradient(160deg,#eef6ff,#fdeef4)' };
+const badgeArt = r => { const n = BADGE_NUM[r.id] ?? r.at; return `<i class="badge-art ${n >= 100 ? 'diamond' : n >= 50 ? '' : n >= 20 ? 'silver' : 'pink'}">${n}</i>`; };
 const FEATURED = CATALOG.filter(r => !r.hidden && r.at % 10 === 0);
 function artHTML(r) {
-  if (TILE_ART[r.id]) return `<img src="/img/${TILE_ART[r.id]}.webp" alt=""${r.id === 'bigGift' ? ' style="filter:hue-rotate(200deg) saturate(1.2)"' : ''}>`;
-  if (r.cat === 'odznaki') { const n = BADGE_NUM[r.id] ?? r.at; return `<i class="badge-art ${n >= 100 ? 'diamond' : n >= 50 ? '' : n >= 20 ? 'silver' : 'pink'}">${n}</i>`; }
-  if (WEAR[r.id]) return `<img class="${WEAR[r.id].px ? 'px-art' : 'px-art'}" src="/img/${WEAR[r.id].src}" alt="">`;
+  if (TILE_ART[r.id]) return `<img src="/img/${TILE_ART[r.id]}.webp" alt=""${TILE_FILTER[r.id] ? ` style="filter:${TILE_FILTER[r.id]}"` : ''}>`;
+  if (r.slot === 'pin' || (r.cat === 'odznaki' && !WEAR[r.id])) return badgeArt(r);
+  if (WEAR[r.id]) return `<img class="px-art" src="/img/${WEAR[r.id].src}" alt="">`;
+  if (DECOR[r.id]) return `<img class="px-art decor-art" src="/img/${DECOR[r.id].src}" alt="">`;
   if (FX_ART[r.id]) return `<img class="px-art" src="/img/${FX_ART[r.id]}.png" alt="">`;
   return `<img src="/img/tile-gift.webp" alt="">`;
 }
+// locked -> ready (earned, waiting to be claimed) -> owned -> worn / set
+const itemStatus = (r, m) => m.n < r.at ? 'locked' : !m.claimed.includes(r.id) ? 'ready' : m.outfit.includes(r.id) ? 'worn' : 'owned';
 function itemTile(r, m, extra = '') {
-  const open = m.n >= r.at, worn = m.outfit.includes(r.id);
-  return `<button class="item ${open ? '' : 'locked'} ${worn ? 'worn' : ''} ${extra}" data-action="item" data-id="${r.id}" aria-label="${h(r.name)}${open ? '' : ', zablokowane'}">
-    <span class="art" style="--tile-bg:${TILE_BG[r.cat]}"><span class="ai">${artHTML(r)}</span>${open ? '' : `<span class="lock">${I.lock}</span><span class="need">${r.at} sp.</span>`}${worn ? `<span class="ok">${I.check}</span>` : ''}</span>
+  const st = itemStatus(r, m);
+  const label = { locked: ', zablokowane', ready: ', do odebrania', worn: SET_SLOTS.includes(r.slot) ? ', ustawione' : ', założone', owned: ', w ekwipunku' }[st];
+  return `<button class="item ${st} ${extra}" data-action="item" data-id="${r.id}" aria-label="${h(r.name)}${label}">
+    <span class="art" style="--tile-bg:${TILE_BG[r.cat]}"><span class="ai">${artHTML(r)}</span>${st === 'locked' ? `<span class="lock">${I.lock}</span><span class="need">${r.at} sp.</span>` : ''}${st === 'worn' ? `<span class="ok">${I.check}</span>` : ''}${st === 'ready' ? '<span class="claim">Odbierz</span>' : ''}</span>
     <p>${h(r.name)}</p></button>`;
 }
 const LINES = { crown: 'Puszystek ma teraz koronę!' };
@@ -102,6 +112,7 @@ const LADDER = [5, 10, ...Array.from({ length: 200 }, (_, i) => 20 + i * 10)];
 const DEMO_DAY = 86400000;
 let demoOutfit = params.has('outfit') ? params.get('outfit').split(',').filter(Boolean) : ['crown', 'bow'];
 let demoOpened = [];
+let demoClaimed = null;
 function demoState() {
   const now = Date.now(), n = params.has('count') ? Math.max(0, +params.get('count') || 0) : 27;
   return {
@@ -109,7 +120,7 @@ function demoState() {
     members: [{ name: 'Miłosz', slot: 1 }, { name: 'Ola', slot: 2 }],
     firstMetAt: (d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`)(new Date(now - 214 * DEMO_DAY)),
     meetings: [{ id: 'd1', occurred_at: now - 3 * DEMO_DAY - 3600000, source: 'auto' }, { id: 'd2', occurred_at: now - 9 * DEMO_DAY, source: 'manual' }],
-    rewards: { unlocked: unlockedIds(n), equipped: sanitizeOutfit(demoOutfit, n, demoOpened), opened: demoOpened },
+    rewards: { unlocked: unlockedIds(n), claimed: demoClaimed ??= CATALOG.filter(r => claimable(r, n, demoOpened) && (params.has('outfit') || !['bowLav', 'week'].includes(r.id))).map(r => r.id), equipped: sanitizeOutfit(demoOutfit, n, demoOpened), opened: demoOpened, version: 1 },
     proximity: { radius: 150, mine: true, partner: true, fresh: true, near: true, distance: 40, since: now - 900000, recorded: true, canConfirm: false },
   };
 }
@@ -124,7 +135,7 @@ function model() {
   const nodes = LADDER.slice(start, start + 6);
   const last = state.meetings?.[0];
   const d = last ? Math.max(0, Math.floor((Date.now() - last.occurred_at) / 86400000)) : null;
-  const rw = state.rewards || { unlocked: unlockedIds(n), equipped: [], opened: [] };
+  const rw = state.rewards || { unlocked: unlockedIds(n), equipped: [], opened: [], claimed: [] };
   const pr = state.proximity || {};
   const m = {
     n, goal, next, level, levelGoal: goal, nodes, d,
@@ -132,8 +143,11 @@ function model() {
     left: goal - n,
     days: state.firstMetAt ? daysSince(state.firstMetAt) : null,
     unlocked: CATALOG.filter(r => n >= r.at && !r.hidden),
-    outfit: rw.equipped || [], opened: rw.opened || [],
+    outfit: rw.equipped || [], opened: rw.opened || [], claimed: rw.claimed || [],
   };
+  // earned rewards waiting to be claimed into the shared inventory
+  m.ready = CATALOG.filter(r => claimable(r, n, m.opened) && !m.claimed.includes(r.id));
+  m.pin = m.outfit.map(id => BY_ID[id]).find(r => r?.slot === 'pin');
   if (DEMO && !params.has('count')) Object.assign(m, { goal: 50, next: 60, level: 4, levelGoal: 50, left: 23, nodes: [10, 20, 30, 40, 50, 60], reachedAll: 5 });
   m.reached = m.reachedAll ?? m.nodes.filter(v => n >= v).length;
   return m;
@@ -161,7 +175,7 @@ async function request(path, data) {
   if (data !== undefined) opts.body = JSON.stringify(data);
   const res = await fetch(path, opts);
   let json; try { json = await res.json(); } catch { throw new Error('Brak odpowiedzi serwera.'); }
-  if (!res.ok) throw new Error(json.error || 'Wystąpił błąd.');
+  if (!res.ok) { const e = new Error(json.error || 'Wystąpił błąd.'); e.data = json; e.status = res.status; throw e; }
   return json;
 }
 
@@ -193,6 +207,7 @@ function viewHome(m) {
   <section class="card hero tap rise" style="--i:0" data-action="meeting" aria-label="Licznik spotkań">
     <img class="plate" src="/img/hero-home.webp" alt="">
     ${I.heart('hero-heart')}
+    ${m.pin ? `<span class="hero-pin" title="${h(m.pin.name)}">${badgeArt(m.pin)}</span>` : ''}
     <svg class="count" viewBox="0 0 365 92" role="img" aria-label="${m.n}" data-count="${m.n}"><text x="182.5" y="68.5" text-anchor="middle">${m.n}</text></svg>
     <p class="count-label">${plural(m.n, 'spotkanie na żywo', 'spotkania na żywo', 'spotkań na żywo')}</p>
     <p class="count-sub">${I.heart()}liczone wspólnie</p>
@@ -200,7 +215,7 @@ function viewHome(m) {
       <p class="panel-title">Pasek spotkań</p>
       <p class="ratio"><b>${m.n}</b> / ${m.levelGoal}</p>
       <div class="track" role="progressbar" aria-valuemin="0" aria-valuemax="${m.levelGoal}" aria-valuenow="${m.n}"><div class="fill" data-w="${pct}">${hearts4()}</div></div>
-      <button class="gift ${m.left <= 3 ? 'ready' : ''}" data-action="rewards" aria-label="Nagrody">${I.gift}</button>
+      <button class="gift ${m.left <= 3 || m.ready.length ? 'ready' : ''}" data-action="${m.ready.length ? 'collection' : 'rewards'}" aria-label="Nagrody${m.ready.length ? `, ${m.ready.length} do odebrania` : ''}">${I.gift}${m.ready.length ? `<span class="dot">${m.ready.length}</span>` : ''}</button>
       <p class="hint">${I.flag}Jeszcze ${m.left} ${plural(m.left, 'spotkanie', 'spotkania', 'spotkań')} do kolejnego celu!</p>
     </div>
   </section>
@@ -211,7 +226,7 @@ function viewHome(m) {
   </section>
   <button class="pill rise ${geoEnabled ? 'on' : ''}" style="--i:2" data-action="detect">${I.pin()}<span>Auto-zliczanie, gdy jesteście razem</span><span data-action="location-info" role="button" aria-label="Jak to działa">${I.info()}</span></button>
   <img class="meadow-bg" src="/img/meadow-home.webp" alt="" style="position:absolute;left:0;width:100%;top:${dp(1150 / S)}">
-  ${sunsetGlow(m, 1150)}
+  ${themeGlow(m, 1150)}
   ${deco('home')}
   ${cat('home')}
   <div class="bubble" ${!DEMO && state && !state.connected ? 'data-action="copy"' : ''}>${phrase(m)}</div>`;
@@ -249,9 +264,9 @@ function viewRewards(m) {
   </section>
   <section class="card wide rewards rise" style="--i:2">
     <h3>${I.gift}Nagrody</h3>
-    <button class="see-all" data-action="collection">Zobacz wszystkie ${I.chev('')}</button>
+    <button class="see-all" data-action="collection">${m.ready.length ? `Do odebrania<span class="dot">${m.ready.length}</span>` : 'Zobacz wszystkie'} ${I.chev('')}</button>
     <button class="nav-arrow l" data-action="tile-prev" aria-label="Poprzednie nagrody" ${tileStart <= 0 ? 'aria-disabled="true"' : ''}>${I.chevL}</button>
-    <div class="tiles">${tiles.map((r, i) => `<button class="tile ${m.n >= r.at ? '' : 'locked'}" data-action="item" data-id="${r.id}" style="left:${dp([-1.4, 85.6, 172.4, 254.2][i])}"><span class="art">${TILE_ART[r.id] ? `<img src="/img/${TILE_ART[r.id]}.webp" alt="">` : `<span class="gen" style="background:${TILE_BG[r.cat]}">${artHTML(r)}</span>`}${m.n >= r.at ? `<span class="ok">${I.check}</span>` : ''}</span><p>${LABEL[r.id] || h(r.name).replace(' ', '<br>')}</p></button>`).join('')}</div>
+    <div class="tiles">${tiles.map((r, i) => `<button class="tile ${m.n >= r.at ? '' : 'locked'}" data-action="item" data-id="${r.id}" style="left:${dp([-1.4, 85.6, 172.4, 254.2][i])}"><span class="art">${TILE_ART[r.id] ? artHTML(r) : `<span class="gen" style="background:${TILE_BG[r.cat]}">${artHTML(r)}</span>`}${m.n >= r.at ? `<span class="ok">${I.check}</span>` : ''}</span><p>${LABEL[r.id] || h(r.name).replace(' ', '<br>')}</p></button>`).join('')}</div>
     <button class="nav-arrow r" data-action="tile-next" aria-label="Następne nagrody" ${tileStart >= FEATURED.length - 4 ? 'aria-disabled="true"' : ''}>${I.chev('')}</button>
   </section>
   <section class="unlock">
@@ -261,7 +276,7 @@ function viewRewards(m) {
       : `<h3>Pierwszy prezent już blisko</h3><p>Jeszcze ${meetings(nextReward.at - m.n)} do nagrody! ${I.crown}<br>Puszystek już nie może się doczekać ${I.hearts2}</p>`}
     <button class="btn-super" data-action="${gifted ? 'item' : 'super'}" ${gifted ? `data-id="${latest.id}"` : ''}>${gifted ? 'Otwórz!' : 'Super!'} ${I.heart('', '#fff')}</button>
   </section>
-  ${sunsetGlow(m, 1270)}
+  ${themeGlow(m, 1270)}
   ${deco('rew')}
   ${cat('rew')}`;
 }
@@ -303,33 +318,32 @@ function viewDetect(m) {
   <section class="card row rise" style="--i:2;top:${dp(583.2)}"><span class="ic bell">${I.bell}</span><h4>Powiadomienia</h4><p>Otrzymujecie informację, gdy się spotkacie.</p><button class="switch" role="switch" aria-checked="${notifyOn}" data-action="toggle-notify" aria-label="Powiadomienia"></button></section>
   <section class="card row rise" style="--i:3;top:${dp(641.6)};height:${dp(64.4)}"><span class="ic sync" style="top:${dp(11.6)}">${I.sync}</span><h4>Wspólna synchronizacja</h4><p>Spotkania zapisują się automatycznie<br>w Waszym pasku.</p><button class="switch" role="switch" aria-checked="${syncOn}" data-action="toggle-sync" aria-label="Wspólna synchronizacja" style="top:${dp(14.2)}"></button></section>
   <img class="meadow-bg" src="/img/meadow-detect.webp" alt="" style="position:absolute;left:0;width:100%;top:${dp(1245 / S)}">
-  ${sunsetGlow(m, 1245)}
+  ${themeGlow(m, 1245)}
   ${deco('det')}
   ${c.together ? cat('detCheer', 'cheer', 'Puszystek cieszy się') : cat('detSit')}
   <div class="hurra">${c.together ? `<b>Hurra!</b><span>Jesteście razem! ${I.hearts2}</span>` : `<b>Hej!</b><span>Czekam na was ${I.hearts2}</span>`}</div>`;
 }
 
 function viewCollection(m) {
-  const visible = CATALOG.filter(r => !r.hidden || m.opened.includes(r.hidden));
-  const list = visible.filter(r => collCat === 'all' || r.cat === collCat);
-  const wearables = list.filter(r => r.cat !== 'odznaki');
-  const badges = list.filter(r => r.cat === 'odznaki');
-  const openCount = visible.filter(r => m.n >= r.at).length;
+  const visible = CATALOG.filter(r => isVisible(r, m.opened));
+  const owned = visible.filter(r => m.claimed.includes(r.id)).length;
   const worn = m.outfit.map(id => BY_ID[id]).filter(Boolean);
   const box = [178, 0, 236];
+  const cats = collCat === 'all' ? Object.keys(CATEGORIES) : [collCat];
   return `<div class="coll-wrap">
     <section class="card wardrobe rise" style="--i:0">
       <img class="plate" src="/img/unlock-rewards.webp" alt="">
-      ${sunsetGlow(m, 0).replace('style="', 'style="bottom:0;')}
-      <h2>Garderoba Puszystka</h2>
-      <p class="sub">Nagrody zdobywacie razem — liczy się wspólny licznik.</p>
-      <span class="stat-pill"><b>${openCount}</b> / ${visible.length}</span>
+      ${themeGlow(m, 0).replace('style="', 'style="bottom:0;')}
+      <h2>Wspólny ekwipunek</h2>
+      <p class="sub">${h(myName())} + ${h(otherName())} — jedna garderoba Puszystka.</p>
+      <span class="stat-pill"><b>${owned}</b> / ${visible.length}</span>
       <div class="worn">${worn.length ? worn.map(r => `<span class="chip">${h(r.name)}</span>`).join('') : '<span class="chip empty">Nic nie ma na sobie</span>'}</div>
-      ${puszystekHTML({ pose: 'home', box, outfit: m.outfit, label: 'Puszystek', stagePx: (x, y, w) => `right:${dp(8)};bottom:${dp(-6)};width:${dp(w / S * .74)}` })}
+      ${m.ready.length ? `<button class="claim-all" data-action="claim-all">${I.gift}Odbierz wszystko (${m.ready.length})</button>` : ''}
+      ${puszystekHTML({ pose: 'home', box, outfit: m.outfit, label: 'Puszystek', fresh: freshItem, stagePx: (x, y, w) => `right:${dp(8)};bottom:${dp(-6)};width:${dp(w / S * .74)}` })}
     </section>
     <div class="cats" role="group" aria-label="Kategorie">${[['all', 'Wszystkie'], ...Object.entries(CATEGORIES)].map(([k, v]) => `<button aria-pressed="${collCat === k}" data-action="coll-cat" data-cat="${k}">${v}</button>`).join('')}</div>
-    ${wearables.length ? `<section class="card coll-card rise" style="--i:1"><h3>Kolekcja <small>${wearables.filter(r => m.n >= r.at).length} z ${wearables.length}</small></h3><div class="grid">${wearables.map(r => itemTile(r, m)).join('')}</div></section>` : ''}
-    ${badges.length ? `<section class="card coll-card rise" style="--i:2"><h3>Gablota odznak <small>${badges.filter(r => m.n >= r.at).length} z ${badges.length}</small></h3><div class="shelf">${badges.map(r => itemTile(r, m)).join('')}</div></section>` : ''}
+    ${cats.map((c, i) => { const list = visible.filter(r => r.cat === c); return `<section class="card coll-card rise" style="--i:${i + 1}"><h3>${CATEGORIES[c]} <small>${list.filter(r => m.claimed.includes(r.id)).length} z ${list.length}</small></h3><div class="grid">${list.map(r => itemTile(r, m)).join('')}</div></section>`; }).join('')}
+    <p class="coll-note">Nagrody zdobywacie razem. To, co założy jedna osoba, druga zobaczy u siebie.</p>
   </div>`;
 }
 
@@ -340,12 +354,12 @@ function viewOnboarding() {
     <p class="sub">Liczcie wspólne spotkania i zbierajcie nagrody z Puszystkiem.</p>
     <div class="seg" role="group"><button aria-pressed="${mode === 'create'}" data-action="mode-create">Stwórz parę</button><button aria-pressed="${mode === 'join'}" data-action="mode-join">Dołącz z kodem</button></div>
     <form id="start-form">
-      <label class="field-l" for="name">Jak masz na imię?</label>
-      <input id="name" class="field" maxlength="28" minlength="2" placeholder="Twoje imię" required autocomplete="given-name">
+      ${mode === 'restore' ? '<label class="field-l" for="code">Twój kod logowania</label><input id="code" class="field" maxlength="16" placeholder="12 znaków z ustawień" required autocapitalize="characters" autocomplete="one-time-code">' : `<label class="field-l" for="name">Jak masz na imię?</label>
+      <input id="name" class="field" maxlength="28" minlength="2" placeholder="Twoje imię" required autocomplete="given-name">`}
       ${mode === 'join' ? '<label class="field-l" for="code">Kod od drugiej osoby</label><input id="code" class="field" maxlength="11" placeholder="Np. ABCD1234" required autocapitalize="characters" autocomplete="off">' : ''}
-      <button class="btn-main" type="submit">${mode === 'create' ? 'Stwórz nasz świat' : 'Połącz nasze światy'} ${I.heart('', '#fff')}</button>
+      <button class="btn-main" type="submit">${mode === 'create' ? 'Stwórz nasz świat' : mode === 'join' ? 'Połącz nasze światy' : 'Zaloguj się'} ${I.heart('', '#fff')}</button>
     </form>
-    <p class="note">Bez konta i bez reklam. Działa na dwóch telefonach.</p>
+    <p class="note">${mode === 'restore' ? '<button data-action="mode-create" style="text-decoration:underline">Wróć</button>' : 'Masz już parę na innym telefonie? <button data-action="mode-restore" style="text-decoration:underline">Zaloguj się kodem</button>'}</p>
   </section>
   <img class="meadow-bg" src="/img/meadow-home.webp" alt="" style="position:absolute;left:0;width:100%;top:${dp(1150 / S)}">
   ${deco('home')}
@@ -369,7 +383,7 @@ function render(next, animate = false) {
   const m = model();
   const html = route === 'onboarding' ? viewOnboarding() : route === 'rewards' ? viewRewards(m) : route === 'detect' ? viewDetect(m) : route === 'collection' ? viewCollection(m) : viewHome(m);
   const v = document.createElement('div');
-  v.className = 'view' + (m?.outfit.includes('sunset') ? ' sunset' : '');
+  v.className = 'view' + (themeOf(m) ? ' ' + themeOf(m) : '');
   v.dataset.route = route;
   v.innerHTML = html;
   const old = [...views.children];
@@ -377,7 +391,7 @@ function render(next, animate = false) {
     const backNav = ORDER[route] < ORDER[prev];
     v.classList.add('enter'); if (backNav) v.classList.add('back-nav');
     old.forEach(o => { o.classList.remove('enter'); o.classList.add('leave'); if (backNav) o.classList.add('back-nav'); setTimeout(() => o.remove(), 340); });
-    window.scrollTo({ top: 0, behavior: reduced.matches ? 'auto' : 'smooth' });
+    app.scrollTo?.({ top: 0, behavior: reduced.matches ? 'auto' : 'smooth' });
   } else {
     old.forEach(o => o.remove());
     if (!animate) v.querySelectorAll('.rise').forEach(e => e.classList.remove('rise'));
@@ -389,6 +403,7 @@ function render(next, animate = false) {
   if (route === 'collection') requestAnimationFrame(() => { const w = v.querySelector('.coll-wrap'); if (w) stage.style.height = Math.max(stage.offsetHeight, w.offsetTop + w.offsetHeight) + 'px'; });
   if (!overlay) pusz.mount(v.querySelector('.pusz'));
   settle(v, animate || !old.length);
+  freshItem = '';
 }
 
 // After a view is in the DOM: grow progress bars, count up numbers.
@@ -440,11 +455,12 @@ setInterval(() => {
 // ------------------------------------------------------------------ meeting celebration
 // Two hearts meet, light, "Jesteście razem!", Puszystek cheers, the counter
 // rolls to the new number, then any newly unlocked reward gets its own card.
+const ovPusz = (outfit, fresh = '') => puszystekHTML({ pose: 'cheer', box: [0, 0, 241], outfit, fresh, label: 'Puszystek świętuje', stagePx: (x, y, w) => `left:calc(50% - ${dp(w / S * .62)});bottom:${dp(18)};width:${dp(w / S * 1.24)}` });
 function celebrationHTML({ n, preview, milestone }) {
   const m = model();
   const confetti = reduced.matches ? '' : Array.from({ length: 18 }, (_, i) => `<img class="px-art" src="/img/${['home-heart-0', 'home-heart-2', 'home-spark-5', 'det-heart-2'][i % 4]}.png" alt="" style="left:${(i * 53) % 100}%;--dx:${((i % 5) - 2) * 30}px;--r:${(i * 67) % 360}deg;animation-duration:${2.6 + (i % 4) * .5}s;animation-delay:${1.2 + (i % 6) * .15}s">`).join('');
   return `<div class="ov" id="ov" role="dialog" aria-modal="true" aria-label="Jesteście razem">
-    <div class="ov-stage ${m.outfit.includes('sunset') ? 'sunset' : ''}">
+    <div class="ov-stage ${themeOf(m)}">
       ${preview ? '<span class="ov-preview">Podgląd — bez naliczania</span>' : ''}
       <img class="ov-meadow" src="/img/meadow-detect.webp" alt="">
       <span class="ov-rays"></span>
@@ -454,19 +470,24 @@ function celebrationHTML({ n, preview, milestone }) {
       <h2 class="ov-title">${milestone ? 'Wielki dzień!' : 'Jesteście razem!'}</h2>
       <p class="ov-sub">${h(myName())} + ${h(otherName())}${milestone ? ` · kamień milowy ${n}` : ''}</p>
       <div class="ov-count">Wasze <b data-to="${n}">${Math.max(0, n - 1)}</b>. spotkanie!</div>
-      <div class="ov-pusz">${puszystekHTML({ pose: 'cheer', box: [0, 0, 241], outfit: m.outfit, label: 'Puszystek świętuje', stagePx: (x, y, w) => `left:calc(50% - ${dp(w / S * .62)});bottom:${dp(18)};width:${dp(w / S * 1.24)}` })}</div>
+      <div class="ov-pusz">${ovPusz(m.outfit)}</div>
       <div class="ov-confetti">${confetti}</div>
       <div class="ov-actions"><button class="btn-main" data-action="ov-next">Super! ${I.heart('', '#fff')}</button></div>
     </div></div>`;
 }
 function rewardCardHTML(r) {
   const m = model();
-  const wear = r.slot && !m.outfit.includes(r.id);
+  const claimed = m.claimed.includes(r.id), worn = m.outfit.includes(r.id);
+  const slotFree = r.slot && !m.outfit.some(id => BY_ID[id]?.slot === r.slot);
+  const btn = !claimed
+    ? `<button class="btn-soft" data-action="ov-next">Później</button><button class="btn-main" data-action="ov-claim" data-id="${r.id}">${r.reveals ? 'Otwórz prezent' : slotFree ? (SET_SLOTS.includes(r.slot) ? 'Odbierz i ustaw' : 'Odbierz i załóż') : 'Odbierz'} ${I.heart('', '#fff')}</button>`
+    : r.slot && !worn ? `<button class="btn-soft" data-action="ov-next">Później</button><button class="btn-main" data-action="ov-wear" data-id="${r.id}">${SET_SLOTS.includes(r.slot) ? 'Ustaw' : 'Załóż'} ${I.heart('', '#fff')}</button>`
+      : `<button class="btn-main" data-action="ov-next">Super! ${I.heart('', '#fff')}</button>`;
   return `<div class="ov-reward" role="group" aria-label="Nowa nagroda">
-    <div class="kick">${r.reveals ? 'Niespodzianka!' : 'Nowa nagroda!'}</div>
+    <div class="kick">${r.reveals ? 'Niespodzianka!' : isSpecial(r) ? 'Wyjątkowa nagroda!' : 'Nowa nagroda!'}</div>
     <div class="art-wrap">${itemTile(r, { ...m, n: Math.max(m.n, r.at) }).replace('data-action="item"', '')}</div>
     <h3>${h(r.name)}</h3><p>${h(r.desc)}</p>
-    <div class="row-btns">${r.reveals ? `<button class="btn-main" data-action="ov-gift" data-id="${r.id}">Otwórz prezent ${I.heart('', '#fff')}</button>` : wear ? `<button class="btn-soft" data-action="ov-next">Później</button><button class="btn-main" data-action="ov-wear" data-id="${r.id}">Załóż ${I.heart('', '#fff')}</button>` : `<button class="btn-main" data-action="ov-next">Super! ${I.heart('', '#fff')}</button>`}</div>
+    <div class="row-btns">${btn}</div>
   </div>`;
 }
 function showCelebration({ n = state.count, preview = false, rewards = [] } = {}) {
@@ -484,11 +505,16 @@ function showCelebration({ n = state.count, preview = false, rewards = [] } = {}
   setTimeout(() => { if (overlay?.el === el) { pusz.celebrate(milestone ? 'milestone' : 'meeting'); burst(el.querySelector('.pz-body'), 8, 240); } }, reduced.matches ? 0 : 1700);
   if (overlay.queue.length) setTimeout(() => overlay?.el === el && nextReward(), reduced.matches ? 300 : 4200);
 }
-function showRewards(list) {
+function showRewards(list, title = 'Nowa nagroda!') {
   if (!list.length) return;
   showCelebration({ n: state.count, preview: false, rewards: list });
-  overlay.el.querySelector('.ov-title').textContent = 'Nowa nagroda!';
+  overlay.el.querySelector('.ov-title').textContent = title;
   overlay.el.querySelector('.ov-count').style.display = 'none';
+}
+// refresh the cheering Puszystek in the overlay after the outfit changed
+function overlayPusz(fresh) {
+  const p = overlay?.el.querySelector('.ov-pusz'); if (!p) return;
+  p.innerHTML = ovPusz(model().outfit, fresh); pusz.mount(p.querySelector('.pusz'));
 }
 function nextReward() {
   if (!overlay) return;
@@ -512,7 +538,7 @@ function newRewards() {
   const ids = CATALOG.filter(r => !r.hidden && (Number(state.count) || 0) >= r.at).map(r => r.id);
   if (seenRewards === null) { try { seenRewards = JSON.parse(localStorage.getItem(seenKey)); } catch { } }
   if (!Array.isArray(seenRewards)) { seenRewards = ids; if (!DEMO) try { localStorage.setItem(seenKey, JSON.stringify(ids)); } catch { } return []; }
-  const fresh = ids.filter(id => !seenRewards.includes(id));
+  const fresh = ids.filter(id => !seenRewards.includes(id) && !state.rewards?.claimed?.includes(id));
   if (fresh.length) { seenRewards = [...seenRewards, ...fresh]; if (!DEMO) try { localStorage.setItem(seenKey, JSON.stringify(seenRewards)); } catch { } }
   return fresh.map(id => BY_ID[id]);
 }
@@ -525,33 +551,40 @@ function closeSheet() {
   if (!overlay && bg.querySelector('.pusz')) pusz.mount(document.querySelector('.view:not(.leave) .pusz'));
 }
 function itemSheet(r, m) {
-  const open = m.n >= r.at, worn = m.outfit.includes(r.id);
-  const wearable = !!r.slot && open && !(r.hidden && !m.opened.includes(r.hidden));
+  const st = itemStatus(r, m), set = SET_SLOTS.includes(r.slot);
+  const inSlot = r.slot ? m.outfit.map(id => BY_ID[id]).find(x => x?.slot === r.slot) : null;
   const previewOutfit = r.slot ? sanitizeOutfit([...m.outfit, r.id], Math.max(m.n, r.at), [...m.opened, r.hidden].filter(Boolean)) : m.outfit;
-  const gift = r.reveals && open && !m.opened.includes(r.id);
-  const tags = `<div class="tags"><span class="tag-pill">${CATEGORIES[r.cat]}</span>${r.slot ? `<span class="tag-pill">${SLOTS[r.slot]}</span>` : ''}<span class="tag-pill gold">${tierOf(r.at)} · ${meetings(r.at)}</span>${worn ? '<span class="tag-pill pink">Założone</span>' : ''}</div>`;
-  const stageArt = gift ? `<div class="gift-open"><img src="/img/tile-gift.webp" alt=""></div>`
-    : r.slot || r.cat === 'korony' ? `<div class="preview"><img class="bg" src="/img/unlock-rewards.webp" alt="">${puszystekHTML({ pose: 'home', box: [0, 0, 242], outfit: previewOutfit, label: 'Podgląd', stagePx: (x, y, w) => `left:calc(50% - ${dp(w / S * .45)});bottom:${dp(-4)};width:${dp(w / S * .9)}` })}</div>`
-      : `<div class="gift-open">${itemTile(r, m).replace('data-action="item"', '').replace('class="item', 'style="width:110px" class="item')}</div>`;
-  const btns = !open ? `<button class="btn-soft wide" data-action="close">Jeszcze ${meetings(r.at - m.n)}</button>`
-    : gift ? `<button class="btn-main" data-action="open-gift" data-id="${r.id}">Otwórz prezent ${I.heart('', '#fff')}</button>`
-      : wearable ? (worn ? `<button class="btn-soft wide" data-action="unequip" data-id="${r.id}">Zdejmij</button>` : `<button class="btn-main" data-action="equip" data-id="${r.id}">Załóż ${I.heart('', '#fff')}</button>`)
-        : `<button class="btn-main" data-action="close">${r.cat === 'odznaki' ? 'W gablocie' : 'Super!'} ${I.heart('', '#fff')}</button>`;
-  return `${stageArt}<h2>${h(r.name)}</h2>${tags}<p>${h(r.desc)}${r.reveals && m.opened.includes(r.id) ? ` W środku: ${h(BY_ID[r.reveals].name)}.` : ''}</p>${btns}`;
+  const gift = r.reveals && st === 'ready';
+  const tags = `<div class="tags"><span class="tag-pill">${CATEGORIES[r.cat]}</span>${r.slot ? `<span class="tag-pill">${SLOTS[r.slot]}</span>` : ''}<span class="tag-pill gold">${tierOf(r.at)}</span>${st === 'worn' ? `<span class="tag-pill pink">${set ? 'Ustawione' : 'Założone'}</span>` : st === 'owned' ? '<span class="tag-pill">W ekwipunku</span>' : ''}</div>`;
+  const stageArt = r.reveals ? `<div class="gift-open"><img src="/img/tile-gift.webp" alt=""${TILE_FILTER[r.id] ? ` style="filter:${TILE_FILTER[r.id]}"` : ''}></div>`
+    : r.slot === 'pin' ? `<div class="pin-art">${badgeArt(r)}</div>`
+      : r.slot ? `<div class="preview ${r.slot === 'theme' ? r.id : ''}"><img class="bg" src="/img/unlock-rewards.webp" alt="">${puszystekHTML({ pose: 'home', box: [0, 0, 242], outfit: previewOutfit, label: 'Podgląd', stagePx: (x, y, w) => `left:calc(50% - ${dp(w / S * .4)});bottom:${dp(-4)};width:${dp(w / S * .8)}` })}</div>`
+        : `<div class="gift-open">${itemTile(r, m).replace('data-action="item"', '').replace('class="item', 'style="width:110px" class="item')}</div>`;
+  const have = Math.min(m.n, r.at);
+  const cond = `<div class="cond ${m.n >= r.at ? 'met' : ''}"><span class="ck">${m.n >= r.at ? I.check : I.lock}</span><div><b>Warunek: ${meetings(r.at)} razem</b><small>${m.n >= r.at ? 'Spełniony — nagroda jest wasza' : `Macie ${have} z ${r.at}. Jeszcze ${meetings(r.at - m.n)}.`}</small><div class="bar"><i style="width:${(have / r.at * 100).toFixed(1)}%"></i></div></div></div>`;
+  const wearLabel = set ? 'Ustaw' : 'Załóż';
+  const btns = st === 'locked' ? `<button class="btn-soft wide" data-action="close" disabled aria-disabled="true">Zablokowane</button>`
+    : st === 'ready' ? `<button class="btn-main" data-action="claim" data-id="${r.id}">${gift ? 'Otwórz prezent' : 'Odbierz'} ${I.heart('', '#fff')}</button>`
+      : r.reveals ? `<button class="btn-main" data-action="item" data-id="${r.reveals}">Zobacz zawartość ${I.heart('', '#fff')}</button>`
+        : !r.slot ? `<button class="btn-main" data-action="close">Super! ${I.heart('', '#fff')}</button>`
+          : st === 'worn' ? `<button class="btn-soft wide" data-action="unequip" data-id="${r.id}">${set ? 'Wyłącz' : 'Zdejmij'}</button>`
+            : `${inSlot ? `<p class="swap-note">Zamiast: ${h(inSlot.name)}</p>` : ''}<button class="btn-main" data-action="equip" data-id="${r.id}">${inSlot ? (set ? 'Zamień' : 'Zamień i załóż') : wearLabel} ${I.heart('', '#fff')}</button>`;
+  return `${stageArt}<h2>${h(r.name)}</h2>${tags}${cond}<p>${h(r.desc)}${r.reveals && m.opened.includes(r.id) ? ` W środku: ${h(BY_ID[r.reveals].name)}.` : ''}</p>${btns}`;
 }
-function renderSheet() {
+function renderSheet(quiet = false) {
   document.getElementById('sheet')?.remove();
   if (!sheet) return;
   const m = model();
   let c = '';
   if (sheet === 'settings') c = `<h2>Ustawienia</h2><p>Wszystko, czego potrzebujecie, w jednym miejscu.</p>
     <div class="set"><div><b>Wasza para</b><small>${h(myName())} + ${h(otherName())}</small></div>${I.heart('emo')}</div>
-    <div class="set"><div><b>Garderoba Puszystka</b><small>${m ? `${m.unlocked.length} odblokowanych nagród` : ''}</small></div><button class="btn-soft" data-action="collection">Otwórz</button></div>
+    <div class="set"><div><b>Wspólny ekwipunek${m?.ready.length ? `<span class="dot">${m.ready.length}</span>` : ''}</b><small>${m ? `${m.claimed.length} w ekwipunku · wspólny dla was obojga` : ''}</small></div><button class="btn-soft" data-action="collection">Otwórz</button></div>
     <div class="set"><div><b>Data pierwszego spotkania</b><small>Od niej liczymy dni razem.</small></div><button class="btn-soft" data-action="first-date">${h(state?.firstMetAt || 'Ustaw')}</button></div>
     <div class="set"><div><b>Zasięg spotkania</b><small>Odległość, przy której jesteście „razem”.</small></div><button class="btn-soft" data-action="radius">${m?.pr.radius || 150} m</button></div>
     <div class="set"><div><b>Zapisz spotkanie</b><small>Dodajcie spotkanie ręcznie.</small></div><button class="btn-soft" data-action="meeting">Dodaj</button></div>
     ${state && !state.connected ? `<div class="set"><div><b>Kod zaproszenia</b><small>Druga osoba wybiera „Dołącz z kodem”.</small><div class="code">${h(state.code || '')}</div></div><button class="btn-soft" data-action="copy">Kopiuj</button></div>` : ''}
-    <p>Imiona i licznik są na wspólnym serwerze. Pozycja jest tymczasowa — nie tworzymy historii lokalizacji.</p>
+    <div class="set"><div><b>Logowanie na innym telefonie</b><small>Jednorazowo pokażemy Twój kod logowania.</small></div><button class="btn-soft" data-action="login-code">Pokaż kod</button></div>
+    <p>Imiona, licznik, nagrody i ekwipunek są na wspólnym serwerze. Pozycja jest tymczasowa — nie tworzymy historii lokalizacji.</p>
     <button class="btn-soft wide" data-action="history">Historia spotkań</button><div style="height:8px"></div>
     <button class="btn-soft wide btn-danger" data-action="logout">Odłącz ten telefon</button>`;
   else if (sheet === 'history') c = `<h2>Wasze spotkania</h2><p>Ta sama historia na obu telefonach. Pomyłki można usunąć.</p>
@@ -569,10 +602,14 @@ function renderSheet() {
     <p>Wspólne ustawienie dla was obojga. Dokładność pomiaru musi być nie gorsza niż zasięg (maks. 150 m).</p>`;
   else if (sheet === 'nearby') c = `<h2>Jesteście blisko!</h2><p>${h(myName())} i ${h(otherName())} — ok. ${fmtDist(m.pr.distance)} od siebie. Zaczynamy wspólne spotkanie?</p>
     <div class="row-btns"><button class="btn-soft" data-action="close">Nie teraz</button><button class="btn-main" data-action="confirm-meeting">Zaczynamy ${I.heart('', '#fff')}</button></div>`;
+  else if (sheet === 'login') c = `<h2>Twój kod logowania</h2><p>Na nowym telefonie wybierz „Zaloguj się kodem” i wpisz:</p>
+    <div class="login-code">${h(loginCode.replace(/(.{4})(?=.)/g, '$1 '))}</div>
+    <p>Kod jest tylko Twój — nie wysyłaj go nikomu. Wygenerowanie nowego unieważnia poprzedni.</p>
+    <button class="btn-main" data-action="copy-login">Kopiuj kod ${I.heart('', '#fff')}</button>`;
   else if (sheet.startsWith('item:')) c = itemSheet(BY_ID[sheet.slice(5)], m);
   const bg = document.createElement('div');
-  bg.className = 'sheet-bg'; bg.id = 'sheet';
-  bg.innerHTML = `<div class="sheet" role="dialog" aria-modal="true" aria-label="${h(sheet)}">${c}</div>`;
+  bg.className = 'sheet-bg' + (quiet ? ' static' : ''); bg.id = 'sheet';
+  bg.innerHTML = `<div class="sheet${quiet ? ' static' : ''}" role="dialog" aria-modal="true" aria-label="${h(sheet)}">${c}</div>`;
   bg.addEventListener('click', e => { if (e.target === bg) closeSheet(); });
   document.body.appendChild(bg);
   if (sheet.startsWith('item:')) { const p = bg.querySelector('.pusz'); if (p) pusz.mount(p); }
@@ -581,9 +618,35 @@ function renderSheet() {
 // ------------------------------------------------------------------ actions
 function go(r) { const hsh = HASH[r]; if ((location.hash || '') === hsh) return render(r, true); if (hsh) location.hash = hsh; else history.pushState(null, '', location.pathname + location.search); if (!hsh) render('home', true); }
 
-async function setOutfit(ids) {
-  if (DEMO) { demoOutfit = ids; state.rewards.equipped = sanitizeOutfit(ids, state.count, demoOpened); return; }
-  state = await request('/api/equip', { items: ids });
+// One shared inventory: every change names the slot content this phone saw
+// (`expect`), so a simultaneous change by the partner is never overwritten.
+async function changeOutfit(op, id) {
+  const r = BY_ID[id], cur = model().outfit.find(x => BY_ID[x]?.slot === r.slot) || null;
+  if (DEMO) {
+    demoOutfit = op === 'equip' ? [...demoOutfit.filter(x => x !== cur), id] : demoOutfit.filter(x => x !== id);
+    state.rewards.equipped = sanitizeOutfit(demoOutfit, state.count, demoOpened); state.rewards.version++;
+    return true;
+  }
+  try { state = await request('/api/equip', { op, id, expect: cur }); return true; }
+  catch (e) {
+    if (!e.data?.conflict) throw e;
+    state = e.data.state; saveState();
+    const now = model().outfit.find(x => BY_ID[x]?.slot === r.slot);
+    render(route); if (sheet) renderSheet(true);
+    toast(`${h(otherName())} właśnie ${now ? `wybrał(a): ${h(BY_ID[now].name)}` : 'zdjął(-ęła) ten przedmiot'}. Spróbuj jeszcze raz ♡`);
+    return false;
+  }
+}
+async function claim(id) {
+  const r = BY_ID[id];
+  if (DEMO) {
+    demoClaimed = [...new Set([...state.rewards.claimed, id, ...(r.reveals ? [r.reveals] : [])])];
+    if (r.reveals) demoOpened = [...demoOpened, id];
+    state.rewards.claimed = demoClaimed; state.rewards.opened = demoOpened;
+    if (r.slot && !model().outfit.some(x => BY_ID[x]?.slot === r.slot)) { demoOutfit = [...demoOutfit, id]; state.rewards.equipped = sanitizeOutfit(demoOutfit, state.count, demoOpened); }
+    return;
+  }
+  state = await request('/api/claim', { id });
 }
 
 async function act(action, el) {
@@ -593,29 +656,49 @@ async function act(action, el) {
     else if (action === 'rewards') go('rewards');
     else if (action === 'detect') go('detect');
     else if (action === 'collection') { closeSheet(); go('collection'); }
-    else if (action === 'mode-create' || action === 'mode-join') { mode = action.split('-')[1]; render('onboarding'); }
+    else if (action === 'mode-create' || action === 'mode-join' || action === 'mode-restore') { mode = action.split('-')[1]; render('onboarding'); }
     else if (['settings', 'history', 'first-date', 'location-info', 'meeting', 'radius'].includes(action)) { if (!state && action !== 'location-info') return; openSheet(action); }
     else if (action === 'close') closeSheet();
     else if (action === 'cat') { const pick = await pusz.tap(); if (pick === 'hop' || pick === 'hug') burst(el, 4, 120); }
     else if (action === 'super') { burst(document.querySelector('.view:not(.leave) .pz-body'), 9); pusz.celebrate('reward'); el.animate?.([{ transform: 'scale(1)' }, { transform: 'scale(1.08)' }, { transform: 'scale(1)' }], { duration: 400, easing: 'ease-out' }); }
     else if (action === 'item') { openSheet('item:' + el.dataset.id); }
     else if (action === 'equip' || action === 'unequip' || action === 'ov-wear') {
-      const id = el.dataset.id, cur = model().outfit;
-      await setOutfit(action === 'unequip' ? cur.filter(x => x !== id) : [...cur, id]);
-      if (action === 'ov-wear') { render(route); const p = overlay?.el.querySelector('.ov-pusz'); if (p) { p.innerHTML = puszystekHTML({ pose: 'cheer', box: [0, 0, 241], outfit: model().outfit, label: 'Puszystek', stagePx: (x, y, w) => `left:calc(50% - ${dp(w / S * .62)});bottom:${dp(18)};width:${dp(w / S * 1.24)}` }); pusz.mount(p.querySelector('.pusz')); } return nextReward(); }
-      render(route); renderSheet();
-      if (action === 'equip') { pusz.celebrate('reward'); toast(`${h(BY_ID[id].name)} — założone ♥`); } else toast('Zdjęte');
+      const id = el.dataset.id, r = BY_ID[id], on = action !== 'unequip';
+      if (!await changeOutfit(on ? 'equip' : 'unequip', id)) return;
+      saveState();
+      if (on) freshItem = id;
+      if (action === 'ov-wear') { render(route); overlayPusz(id); pusz.celebrate('reward'); return nextReward(); }
+      render(route); renderSheet(true);
+      if (on) { pusz.celebrate('reward'); burst(document.querySelector(`.view:not(.leave) .pz-item[data-item="${id}"]`) || document.querySelector('.view:not(.leave) .pz-body'), 6, 160); toast(`${h(r.name)} — ${SET_SLOTS.includes(r.slot) ? 'ustawione' : 'założone'} ♥`); }
+      else toast(SET_SLOTS.includes(r.slot) ? 'Wyłączone' : 'Zdjęte');
     }
-    else if (action === 'open-gift' || action === 'ov-gift') {
-      const id = el.dataset.id, r = BY_ID[id];
-      const box = el.closest('.sheet, .ov-reward')?.querySelector('.gift-open, .art-wrap');
-      box?.classList.add('opened'); burst(box || el, 12, 260);
-      if (DEMO) { demoOpened = [...demoOpened, id]; state.rewards.opened = demoOpened; } else state = await request('/api/open-gift', { id });
-      await new Promise(res => setTimeout(res, reduced.matches ? 0 : 650));
+    else if (action === 'claim' || action === 'ov-claim' || action === 'open-gift' || action === 'ov-gift') {
+      const id = el.dataset.id, r = BY_ID[id], before = model().outfit;
+      const box = el.closest('.sheet, .ov-reward')?.querySelector('.gift-open, .art-wrap, .preview, .pin-art');
+      if (r.reveals) box?.classList.add('opened');
+      burst(box || el, r.reveals ? 12 : 8, 240);
+      await claim(id); saveState();
+      const wornNow = model().outfit.includes(id) && !before.includes(id);
+      if (wornNow) freshItem = id;
+      if (r.reveals) await new Promise(res => setTimeout(res, reduced.matches ? 0 : 650));
       render(route);
-      if (action === 'ov-gift') { overlay.queue.unshift(BY_ID[r.reveals]); return nextReward(); }
-      openSheet('item:' + r.reveals);
+      if (overlay) { if (wornNow) overlayPusz(id); pusz.celebrate('reward'); if (r.reveals) { overlay.queue.unshift(BY_ID[r.reveals]); } return nextReward(); }
+      if (r.reveals) return openSheet('item:' + r.reveals);
+      if (isSpecial(r)) { closeSheet(); return showRewards([r], 'Wyjątkowa nagroda!'); }
+      renderSheet(true); pusz.celebrate('reward');
+      toast(wornNow ? `${h(r.name)} — w ekwipunku i ${SET_SLOTS.includes(r.slot) ? 'ustawione' : 'założone'} ♥` : `${h(r.name)} — w ekwipunku ♥`);
     }
+    else if (action === 'claim-all') {
+      const list = model().ready;
+      for (const r of list) await claim(r.id);
+      saveState(); render(route); pusz.celebrate('reward'); burst(el, 12, 260);
+      toast(`Odebrane: ${list.length} ♥`);
+    }
+    else if (action === 'login-code') {
+      if (DEMO) throw new Error('To tylko podgląd — nic nie zapisujemy ♡');
+      loginCode = (await request('/api/login-code', {})).code; openSheet('login');
+    }
+    else if (action === 'copy-login') { await navigator.clipboard.writeText(loginCode); toast('Kod logowania skopiowany'); }
     else if (action === 'coll-cat') { collCat = el.dataset.cat; render('collection'); }
     else if (action === 'tile-prev' || action === 'tile-next') {
       const next = Math.max(0, Math.min(FEATURED.length - 4, tileStart + (action === 'tile-next' ? 1 : -1)));
@@ -633,7 +716,7 @@ async function act(action, el) {
     else if (action === 'confirm-meeting') {
       const old = state.count;
       state = await request('/api/meeting-confirm', {});
-      closeSheet(); render(route); afterCountChange(old);
+      saveState(); closeSheet(); render(route); afterCountChange(old);
     }
     else if (action === 'copy') { await navigator.clipboard.writeText(state.code); toast('Kod zaproszenia skopiowany ♡'); }
     else if (action === 'delete') { if (!confirm('Usunąć to spotkanie z waszego licznika?')) return; state = await request('/api/delete-meeting', { id: el.dataset.id }); render(route); renderSheet(); toast('Spotkanie usunięte'); }
@@ -649,8 +732,8 @@ async function act(action, el) {
     }
     else if (action === 'toggle-sync') { syncOn = el.getAttribute('aria-checked') !== 'true'; if (!DEMO) setPref('sync', syncOn); el.setAttribute('aria-checked', String(syncOn)); if (syncOn) refresh(); }
     else if (action === 'logout') {
-      if (!confirm('Odłączyć ten telefon? Bez kodu odzyskiwania utracisz dostęp do tej pary.')) return;
-      stopGeo(); localStorage.removeItem(cacheKey); token = ''; state = null; closeSheet(); render('onboarding');
+      if (!confirm('Odłączyć ten telefon? Wrócisz do pary tylko z kodem logowania (Ustawienia → Pokaż kod). Wasze dane zostają na serwerze.')) return;
+      stopGeo(); signOut(); closeSheet(); render('onboarding');
     }
   } catch (err) { toast(h(err.message)); }
 }
@@ -662,18 +745,18 @@ document.addEventListener('submit', async e => {
   const btn = form.querySelector('[type=submit]'); if (btn) btn.disabled = true;
   try {
     if (form.id === 'start-form') {
-      const name = form.querySelector('#name').value.trim();
+      const name = form.querySelector('#name')?.value.trim();
       if (DEMO) throw new Error('To tylko podgląd — nic nie zapisujemy ♡');
-      const res = mode === 'create' ? await request('/api/create', { name }) : await request('/api/join', { name, code: form.querySelector('#code').value });
+      const res = mode === 'create' ? await request('/api/create', { name }) : mode === 'join' ? await request('/api/join', { name, code: form.querySelector('#code').value }) : await request('/api/restore', { code: form.querySelector('#code').value });
       token = res.token; localStorage.setItem(cacheKey, token); state = null;
-      await refresh(); toast(mode === 'create' ? 'Wasz świat jest gotowy ♥' : 'Jesteście połączeni! ♥');
+      await refresh(); toast(mode === 'create' ? 'Wasz świat jest gotowy ♥' : mode === 'join' ? 'Jesteście połączeni! ♥' : 'Witaj z powrotem! ♥');
     } else if (form.id === 'date-form') {
       state = await request('/api/first-date', { date: form.querySelector('#startdate').value }); closeSheet(); render(route); toast('Data zapisana ♥');
     } else if (form.id === 'meeting-form') {
       const d = form.querySelector('#mdate').value, today = new Date().toISOString().slice(0, 10);
       const old = state.count;
       state = await request('/api/meeting', d && d !== today ? { at: d + 'T12:00:00' } : {});
-      closeSheet(); render(route); afterCountChange(old);
+      saveState(); closeSheet(); render(route); afterCountChange(old);
     }
   } catch (err) { toast(h(err.message)); } finally { working = false; if (btn) btn.disabled = false; }
 });
@@ -686,16 +769,28 @@ function afterCountChange(old) {
   else newRewards();
 }
 
-let promptedSession = null;
+function saveState() { if (!DEMO && state) try { localStorage.setItem(stateKey, JSON.stringify(state)); } catch { } }
+function signOut() { localStorage.removeItem(cacheKey); try { localStorage.removeItem(stateKey); } catch { } token = ''; state = null; }
+const verb = op => ({ equip: 'założył(a) Puszystkowi', unequip: 'zdjął(-ęła) Puszystkowi', claim: 'odebrał(a)' }[op]);
+
+let promptedSession = null, syncing = false, cached = false;
 async function refresh() {
   if (DEMO) { state = state || demoState(); newRewards(); return render(routeFromHash()); }
   if (!token) return render('onboarding');
+  if (syncing) return; syncing = true;
   try {
     const next = await request('/api/state');
-    const old = state?.count;
-    if (state && JSON.stringify(next) === JSON.stringify(state)) return;
-    state = next;
-    if (!overlay && (!sheet || old === undefined)) render(route === 'onboarding' || !route ? routeFromHash() : route);
+    // the first answer after painting the cached state counts as the initial load
+    const old = cached ? undefined : state?.count, oldVersion = cached ? undefined : state?.rewards?.version;
+    if (state && !cached && JSON.stringify(next) === JSON.stringify(state)) return;
+    state = next; cached = false; saveState();
+    // the partner changed the shared inventory: show it and let Puszystek react
+    const ch = next.rewards?.lastChange;
+    const partnerChange = oldVersion !== undefined && next.rewards.version > oldVersion && ch && ch.by !== next.you && BY_ID[ch.id];
+    if (partnerChange && (ch.op === 'equip' || (ch.op === 'claim' && ch.worn))) freshItem = ch.id;
+    // the view under an open celebration is refreshed too, so nothing is stale when it closes
+    if (!sheet || old === undefined || sheet.startsWith('item:') || partnerChange) { render(route === 'onboarding' || !route ? routeFromHash() : route); if (sheet && old !== undefined) renderSheet(true); }
+    if (partnerChange) { toast(`${h(otherName())} ${verb(ch.op) || 'zmienił(a) ekwipunek'}: ${h(BY_ID[ch.id].name)} ♥`); if (ch.op !== 'unequip') pusz.celebrate('reward'); }
     if (old === undefined) newRewards();
     else if (next.count !== old) afterCountChange(old);
     else { const fresh = newRewards(); if (fresh.length) showRewards(fresh); }
@@ -703,9 +798,9 @@ async function refresh() {
     const p = next.proximity;
     if (p?.canConfirm && promptedSession !== p.since && !overlay && !sheet) { promptedSession = p.since; openSheet('nearby'); }
   } catch (err) {
-    if (err.message.includes('Sesja wygasła')) { localStorage.removeItem(cacheKey); token = ''; state = null; stopGeo(); render('onboarding'); }
+    if (err.status === 401) { signOut(); stopGeo(); render('onboarding'); }
     else console.warn('Synchronizacja:', err.message);
-  }
+  } finally { syncing = false; }
 }
 function notify(title, body) { try { if (notifyOn && document.hidden && 'Notification' in window && Notification.permission === 'granted') new Notification(title, { body, icon: '/icon.svg' }); } catch { } }
 
@@ -735,14 +830,21 @@ function stopGeo() { geoEnabled = false; clearInterval(locTimer); locTimer = nul
 window.addEventListener('hashchange', () => { if (state) render(routeFromHash(), true); });
 window.addEventListener('popstate', () => { if (state && !location.hash) render('home', true); });
 document.addEventListener('keydown', e => { if (e.key === 'Escape') { if (overlay) closeOverlay(); else if (sheet) closeSheet(); } });
+// back to the app (unlock, app switcher, tab, network): sync right away
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible' && token && syncOn) { refresh(); sendNow(); }
 });
+['focus', 'pageshow', 'online'].forEach(e => addEventListener(e, () => { if (token && syncOn && document.visibilityState === 'visible') refresh(); }));
+// no accidental pinch/double-tap zoom of the app shell (iOS ignores user-scalable=no)
+['gesturestart', 'gesturechange'].forEach(e => document.addEventListener(e, ev => ev.preventDefault(), { passive: false }));
 
 (async () => {
   if ('serviceWorker' in navigator && !DEMO) navigator.serviceWorker.register('/sw.js').catch(() => { });
+  // paint the last known state at once, then ask the server
+  if (token && !DEMO) try { const c = JSON.parse(localStorage.getItem(stateKey)); if (c?.rewards) { state = c; cached = true; render(routeFromHash()); } } catch { }
   await refresh();
   // demo: ?celebrate=1[&reward=id] plays the meeting animation as a preview
   if (DEMO && params.has('celebrate')) showCelebration({ n: state.count, preview: true, rewards: (params.get('reward') || '').split(',').map(id => BY_ID[id]).filter(Boolean) });
-  setInterval(() => { if (document.visibilityState === 'visible' && token && syncOn && !sheet && !overlay) refresh(); }, 15000);
+  // live sync while the app is open: the shared counter, rewards and Puszystek's outfit
+  setInterval(() => { if (document.visibilityState === 'visible' && token && syncOn) refresh(); }, 6000);
 })();

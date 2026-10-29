@@ -1,4 +1,4 @@
-import { REWARDS, BY_ID, unlockedIds, sanitizeOutfit } from '../public/rewards.js';
+import { BY_ID, unlockedIds, sanitizeOutfit, claimable } from '../public/rewards.js';
 
 const bad=(message,status=400)=>Response.json({error:message},{status,headers:{'Cache-Control':'no-store'}});
 const ok=(data,status=200)=>Response.json(data,{status,headers:{'Cache-Control':'no-store'}});
@@ -22,39 +22,66 @@ const RADII=[100,150,300,500];
 const FRESH=180000, MIN_CONFIRM=60000, MIN_AUTO=10*60000, APART_RESET=30*60000;
 const maxAccuracy=radius=>Math.min(150,Math.max(50,radius));
 
-// Incremental, backwards compatible migration: only adds a table (see migrations/0002_rewards.sql).
+// Incremental, backwards compatible migrations: they only add tables and
+// columns (see migrations/0002_rewards.sql, 0003_inventory.sql). Nothing is dropped.
 let schemaReady=false;
 async function ensureSchema(env){
  if(schemaReady)return;
  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS pair_prefs (pair_id TEXT PRIMARY KEY REFERENCES pairs(id), radius INTEGER NOT NULL DEFAULT 150, equipped TEXT NOT NULL DEFAULT '[]', opened TEXT NOT NULL DEFAULT '[]', seen_count INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0)`).run();
+ const cols=new Set(((await env.DB.prepare('PRAGMA table_info(pair_prefs)').all()).results||[]).map(c=>c.name));
+ for(const [c,def] of [['claimed',"TEXT NOT NULL DEFAULT '[]'"],['version','INTEGER NOT NULL DEFAULT 0'],['last_change','TEXT']]){
+  if(cols.has(c))continue;
+  try{await env.DB.prepare(`ALTER TABLE pair_prefs ADD COLUMN ${c} ${def}`).run()}catch(e){if(!/duplicate column/i.test(String(e?.message)))throw e}
+ }
+ await env.DB.batch([
+  env.DB.prepare('CREATE TABLE IF NOT EXISTS member_tokens (token_hash TEXT PRIMARY KEY, member_id TEXT NOT NULL REFERENCES members(id), created_at INTEGER NOT NULL)'),
+  env.DB.prepare('CREATE TABLE IF NOT EXISTS member_recovery (member_id TEXT PRIMARY KEY REFERENCES members(id), code_hash TEXT NOT NULL UNIQUE, created_at INTEGER NOT NULL)'),
+ ]);
  schemaReady=true;
 }
 const countOf=async(env,pairId)=>(await env.DB.prepare('SELECT COUNT(*) AS n FROM meetings WHERE pair_id=?').bind(pairId).first()).n;
+const PREF_COLS='radius,equipped,opened,claimed,seen_count,version,last_change';
 async function prefs(env,pairId){
- let p=await env.DB.prepare('SELECT radius,equipped,opened,seen_count FROM pair_prefs WHERE pair_id=?').bind(pairId).first();
+ let p=await env.DB.prepare(`SELECT ${PREF_COLS} FROM pair_prefs WHERE pair_id=?`).bind(pairId).first();
  if(!p){
-  // First visit after the update: dress Puszystek in the best head and neck item the pair already earned.
-  const n=await countOf(env,pairId);
-  const best=['head','neck'].map(s=>REWARDS.filter(r=>r.slot===s&&n>=r.at).at(-1)?.id).filter(Boolean);
-  await env.DB.prepare('INSERT OR IGNORE INTO pair_prefs(pair_id,equipped,seen_count,updated_at) VALUES (?,?,?,?)').bind(pairId,JSON.stringify(best),n,Date.now()).run();
-  p=await env.DB.prepare('SELECT radius,equipped,opened,seen_count FROM pair_prefs WHERE pair_id=?').bind(pairId).first();
+  await env.DB.prepare('INSERT OR IGNORE INTO pair_prefs(pair_id,seen_count,updated_at) VALUES (?,?,?)').bind(pairId,await countOf(env,pairId),Date.now()).run();
+  p=await env.DB.prepare(`SELECT ${PREF_COLS} FROM pair_prefs WHERE pair_id=?`).bind(pairId).first();
  }
- return {radius:p.radius,equipped:parse(p.equipped,[]),opened:parse(p.opened,[]),seenCount:p.seen_count};
+ const equipped=parse(p.equipped,[]),opened=parse(p.opened,[]);
+ // rows from before the inventory existed: whatever was worn or opened counts as claimed
+ const claimed=[...new Set([...parse(p.claimed,[]),...equipped,...opened,...opened.map(g=>BY_ID[g]?.reveals).filter(Boolean)])];
+ let last=null;try{last=p.last_change?JSON.parse(p.last_change):null}catch{}
+ return {radius:p.radius,equipped,opened,claimed,seenCount:p.seen_count,version:Number(p.version)||0,lastChange:last};
 }
-// After the shared count changed: newly unlocked wearables are put on automatically (one per slot).
+// Inventory writes use optimistic concurrency: the row is written only if its
+// version is still the one we read; otherwise we re-read and re-apply the
+// change, so two phones changing different slots at the same moment both win.
+async function mutate(env,pairId,fn){
+ for(let i=0;i<5;i++){
+  const p=await prefs(env,pairId),n=await countOf(env,pairId);
+  const next=fn(p,n);if(!next)return;
+  const r=await env.DB.prepare('UPDATE pair_prefs SET equipped=?,claimed=?,opened=?,last_change=?,version=version+1,updated_at=? WHERE pair_id=? AND version=?')
+   .bind(JSON.stringify(next.equipped??p.equipped),JSON.stringify(next.claimed??p.claimed),JSON.stringify(next.opened??p.opened),JSON.stringify(next.change),Date.now(),pairId,p.version).run();
+  if(r.meta?.changes===1)return;
+ }
+ throw new Error('busy');
+}
+// After the shared count changed: remember it and take off anything that is locked again.
 async function syncRewards(env,pairId){
  const p=await prefs(env,pairId),n=await countOf(env,pairId);
- if(n<=p.seenCount){if(n<p.seenCount)await env.DB.prepare('UPDATE pair_prefs SET seen_count=? WHERE pair_id=?').bind(n,pairId).run();return}
- const fresh=REWARDS.filter(r=>r.slot&&!r.hidden&&r.at>p.seenCount&&r.at<=n).map(r=>r.id);
- const outfit=sanitizeOutfit([...p.equipped,...fresh],n,p.opened);
- await env.DB.prepare('UPDATE pair_prefs SET equipped=?,seen_count=?,updated_at=? WHERE pair_id=?').bind(JSON.stringify(outfit),n,Date.now(),pairId).run();
+ if(n===p.seenCount)return;
+ const outfit=sanitizeOutfit(p.equipped,n,p.opened);
+ await env.DB.prepare('UPDATE pair_prefs SET seen_count=?,equipped=?,version=version+?,updated_at=? WHERE pair_id=?').bind(n,JSON.stringify(outfit),outfit.length!==p.equipped.length?1:0,Date.now(),pairId).run();
 }
 async function insertMeeting(env,pairId,when,source,by){
  await env.DB.prepare('INSERT INTO meetings (id,pair_id,occurred_at,source,created_by,created_at) VALUES (?,?,?,?,?,?)').bind(id(),pairId,when,source,by,Date.now()).run();
  await syncRewards(env,pairId);
 }
 
-async function member(req,env){const token=(req.headers.get('Authorization')||'').replace(/^Bearer\s+/i,'');if(!/^[a-f0-9]{64}$/.test(token))return null;return await env.DB.prepare('SELECT m.id,m.pair_id,m.display_name,m.slot,p.invite_code,p.first_met_at,p.created_at FROM members m JOIN pairs p ON p.id=m.pair_id WHERE m.token_hash=?').bind(await sha(token)).first()}
+const MEMBER_SQL='SELECT m.id,m.pair_id,m.display_name,m.slot,p.invite_code,p.first_met_at,p.created_at FROM members m JOIN pairs p ON p.id=m.pair_id';
+// a session is the token from create/join, or one issued later by a login code
+async function member(req,env){const token=(req.headers.get('Authorization')||'').replace(/^Bearer\s+/i,'');if(!/^[a-f0-9]{64}$/.test(token))return null;const hash=await sha(token);
+ return await env.DB.prepare(MEMBER_SQL+' WHERE m.token_hash=?').bind(hash).first()||await env.DB.prepare(MEMBER_SQL+' JOIN member_tokens t ON t.member_id=m.id WHERE t.token_hash=?').bind(hash).first()}
 
 function proximity(rows,pair,radius,you,now=Date.now()){
  const mine=rows.find(r=>r.slot===you),other=rows.find(r=>r.slot!==you);
@@ -76,7 +103,7 @@ async function state(env,m){
  const p=await prefs(env,m.pair_id);
  const rows=ms.results||[];
  return {you:m.slot,members:rows.map(x=>({name:x.display_name,slot:x.slot,locationActive:Number(x.location_at||0)>Date.now()-FRESH})),code:rows.length<2?pair.invite_code:null,firstMetAt:pair.first_met_at,createdAt:pair.created_at,count:n,meetings:meets.results||[],together:!!pair.active_since&&Number(pair.active_since)>Date.now()-3600000,connected:rows.length===2,
-  rewards:{unlocked:unlockedIds(n),equipped:sanitizeOutfit(p.equipped,n,p.opened),opened:p.opened},
+  rewards:{unlocked:unlockedIds(n),claimed:p.claimed.filter(x=>claimable(BY_ID[x],n,p.opened)),equipped:sanitizeOutfit(p.equipped,n,p.opened,p.claimed),opened:p.opened,version:p.version,lastChange:p.lastChange},
   proximity:proximity(rows,pair,p.radius,m.slot)};
 }
 
@@ -95,6 +122,15 @@ async function api(req,env,path){
   const p=await env.DB.prepare('SELECT id FROM pairs WHERE invite_code=?').bind(join).first();if(!p)return bad('Nie znaleziono pary dla tego kodu.',404);
   const t=randomToken(),memberId=id(),now=Date.now();
   try{await env.DB.prepare('INSERT INTO members(id,pair_id,display_name,token_hash,slot,joined_at) VALUES (?,?,?,?,2,?)').bind(memberId,p.id,name,await sha(t),now).run()}catch{return bad('Ta para ma już dwie osoby.',409)}
+  return ok({token:t},201);
+ }
+ if(method==='POST'&&path==='/api/restore'){
+  // Sign in again (new phone, cleared storage) with the personal login code from settings.
+  const b=await body(req),c=typeof b?.code==='string'?b.code.toUpperCase().replace(/[^A-Z0-9]/g,''):'';
+  if(c.length!==12)return bad('Kod logowania ma 12 znaków.');
+  const r=await env.DB.prepare('SELECT member_id FROM member_recovery WHERE code_hash=?').bind(await sha('login:'+c)).first();
+  if(!r)return bad('Nie znaleziono konta dla tego kodu.',404);
+  const t=randomToken();await env.DB.prepare('INSERT INTO member_tokens(token_hash,member_id,created_at) VALUES (?,?,?)').bind(await sha(t),r.member_id,Date.now()).run();
   return ok({token:t},201);
  }
  const m=await member(req,env);if(!m)return bad('Sesja wygasła lub nie została znaleziona.',401);
@@ -159,20 +195,62 @@ async function api(req,env,path){
   await insertMeeting(env,m.pair_id,now,'auto',m.id);
   return ok(await state(env,m));
  }
+ if(method==='POST'&&path==='/api/claim'){
+  // Claim an earned reward into the pair's one shared inventory; a wearable goes on if its slot is free.
+  const b=await body(req),r=BY_ID[b?.id];if(!r)return bad('Nie ma takiej nagrody.');
+  let err=null;
+  await mutate(env,m.pair_id,(p,n)=>{
+   if(!claimable(r,n,p.opened)){err=bad('Ta nagroda jest jeszcze zablokowana.',403);return null}
+   if(p.claimed.includes(r.id))return null;
+   const claimed=[...p.claimed,r.id],opened=[...p.opened];
+   if(r.reveals){opened.push(r.id);claimed.push(r.reveals)}
+   const free=!!r.slot&&!p.equipped.some(x=>BY_ID[x]?.slot===r.slot);
+   return {claimed,opened,equipped:free?[...p.equipped,r.id]:p.equipped,change:{op:'claim',id:r.id,worn:free,by:m.slot,at:Date.now()}};
+  });
+  return err||ok(await state(env,m));
+ }
  if(method==='POST'&&path==='/api/equip'){
-  const b=await body(req);if(!Array.isArray(b?.items)||b.items.length>12)return bad('Nieprawidłowe wyposażenie.');
-  const p=await prefs(env,m.pair_id),n=await countOf(env,m.pair_id);
-  const outfit=sanitizeOutfit(b.items.filter(x=>typeof x==='string'),n,p.opened);
-  await env.DB.prepare('UPDATE pair_prefs SET equipped=?,updated_at=? WHERE pair_id=?').bind(JSON.stringify(outfit),Date.now(),m.pair_id).run();
-  return ok(await state(env,m));
+  const b=await body(req);
+  // stage-2 clients send the whole outfit
+  if(Array.isArray(b?.items)){
+   if(b.items.length>12)return bad('Nieprawidłowe wyposażenie.');
+   await mutate(env,m.pair_id,(p,n)=>({equipped:sanitizeOutfit(b.items.filter(x=>typeof x==='string'),n,p.opened,p.claimed),change:{op:'outfit',by:m.slot,at:Date.now()}}));
+   return ok(await state(env,m));
+  }
+  // One change at a time: {op:'equip'|'unequip', id, expect}. `expect` is what this phone
+  // believed was in that slot; if the partner changed the same slot in the meantime nothing
+  // is overwritten: 409 with the fresh state, so the phone can show the partner's choice.
+  const r=BY_ID[b?.id],op=b?.op;
+  if(!r||!r.slot||!['equip','unequip'].includes(op))return bad('Nieprawidłowe wyposażenie.');
+  let err=null;
+  await mutate(env,m.pair_id,(p,n)=>{
+   if(!claimable(r,n,p.opened)||!p.claimed.includes(r.id)){err=bad('Najpierw odbierzcie tę nagrodę.',403);return null}
+   const cur=p.equipped.find(x=>BY_ID[x]?.slot===r.slot)||null;
+   if(b.expect!==undefined&&(b.expect||null)!==cur){err='conflict';return null}
+   if(op==='equip'){if(cur===r.id)return null;return {equipped:[...p.equipped.filter(x=>x!==cur),r.id],change:{op,id:r.id,prev:cur,by:m.slot,at:Date.now()}}}
+   if(cur!==r.id)return null;
+   return {equipped:p.equipped.filter(x=>x!==r.id),change:{op,id:r.id,by:m.slot,at:Date.now()}};
+  });
+  if(err==='conflict')return Response.json({error:'Druga osoba właśnie to zmieniła — zobaczcie, co wybrała.',conflict:true,state:await state(env,m)},{status:409,headers:{'Cache-Control':'no-store'}});
+  return err||ok(await state(env,m));
  }
  if(method==='POST'&&path==='/api/open-gift'){
+  // kept for stage-2 clients: opening a gift is claiming it
   const b=await body(req),r=BY_ID[b?.id];
   if(!r||!r.reveals)return bad('To nie jest prezent.');
-  const p=await prefs(env,m.pair_id),n=await countOf(env,m.pair_id);
-  if(n<r.at)return bad('Ten prezent jest jeszcze zamknięty.',403);
-  if(!p.opened.includes(r.id))await env.DB.prepare('UPDATE pair_prefs SET opened=?,updated_at=? WHERE pair_id=?').bind(JSON.stringify([...p.opened,r.id]),Date.now(),m.pair_id).run();
-  return ok(await state(env,m));
+  let err=null;
+  await mutate(env,m.pair_id,(p,n)=>{
+   if(n<r.at){err=bad('Ten prezent jest jeszcze zamknięty.',403);return null}
+   if(p.opened.includes(r.id))return null;
+   return {opened:[...p.opened,r.id],claimed:[...new Set([...p.claimed,r.id,r.reveals])],change:{op:'claim',id:r.id,by:m.slot,at:Date.now()}};
+  });
+  return err||ok(await state(env,m));
+ }
+ if(method==='POST'&&path==='/api/login-code'){
+  // personal code for signing in on another phone; a new code replaces the previous one
+  const c=Array.from(crypto.getRandomValues(new Uint8Array(12)),x=>alphabet[x%alphabet.length]).join('');
+  await env.DB.prepare('INSERT INTO member_recovery(member_id,code_hash,created_at) VALUES (?,?,?) ON CONFLICT(member_id) DO UPDATE SET code_hash=excluded.code_hash,created_at=excluded.created_at').bind(m.id,await sha('login:'+c),Date.now()).run();
+  return ok({code:c});
  }
  if(method==='POST'&&path==='/api/settings'){
   const b=await body(req),radius=Number(b?.radius);
@@ -187,4 +265,4 @@ async function api(req,env,path){
  }
  return bad('Nie znaleziono adresu.',404);
 }
-export default {async fetch(request,env){const url=new URL(request.url),path=url.pathname;if(path.startsWith('/api/')){if(!env.DB)return bad('Brak połączenia z bazą.',503);if(request.method==='OPTIONS')return new Response(null,{status:405});try{return await api(request,env,path)}catch(e){console.error('Razem API error',e);return bad('Wystąpił problem. Spróbuj ponownie.',500)}}if(env.ASSETS)return env.ASSETS.fetch(request);return new Response('Brak zasobów strony',{status:404})}};
+export default {async fetch(request,env){const url=new URL(request.url),path=url.pathname;if(path.startsWith('/api/')){if(!env.DB)return bad('Brak połączenia z bazą.',503);if(request.method==='OPTIONS')return new Response(null,{status:405});try{return await api(request,env,path)}catch(e){if(e?.message==='busy')return bad('Druga osoba właśnie coś zmienia — spróbujcie za chwilę.',409);console.error('Razem API error',e);return bad('Wystąpił problem. Spróbuj ponownie.',500)}}if(env.ASSETS)return env.ASSETS.fetch(request);return new Response('Brak zasobów strony',{status:404})}};
