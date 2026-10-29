@@ -8,6 +8,7 @@ import { puszystekHTML, Puszystek, WEAR, DECOR } from './puszystek.js';
 import { medalSVG } from './medals.js';
 import { ART as HOUSE_ART, ITEMS as ROOM_ITEMS, ROOM, roomHTML, RoomEditor, HouseLife, positions, placedIds, freeSpot } from './house.js';
 import { check as roomCheck, movable } from './room.js';
+import { PairMap } from './map.js';
 
 const root = document.getElementById('app');
 const params = new URLSearchParams(location.search);
@@ -356,6 +357,41 @@ function pillState(m) {
   if (p.reason === 'partner_stale' || p.reason === 'partner_off') return { cls: 'on', text: `Czekamy na ${h(partnerName())}…` };
   return { cls: 'on checking', text: 'Sprawdzamy, czy jesteście razem…' };
 }
+// ------------------------------------------------------------------ the real map
+// One persistent map, moved into each re-rendered detection card. My own dot
+// comes from this phone's last reading; my partner's only if they share it.
+const pairMap = new PairMap();
+let mapView = null, mapTimer = 0;
+const AV = slot => slot === 1 ? '/img/chip-boy.png' : '/img/chip-girl.png';
+function mapChip(m) {
+  const p = m?.pr || {};
+  if (DEMO) return 'Dokładność: ±12 m';
+  if (!mapView?.me?.sharing) return 'Pokazuj mnie na mapie: wył.';
+  if (mapView?.partner && !mapView.partner.sharing) return `${partnerName()} nie pokazuje się na mapie`;
+  return p.distance != null ? `ok. ${fmtDist(p.distance)} od siebie · ±${p.me?.acc ?? '–'} m` : 'Dokładność: czekamy na pomiar';
+}
+function mapData() {
+  const m = model(); if (!m) return null;
+  if (DEMO) return { me: { lat: 52.21503, lon: 21.03475, acc: 12, age: 4000 }, partner: { lat: 52.21507, lon: 21.03482, acc: 15, age: 7000 }, meName: 'Ty', partnerName: h(otherName()), meAvatar: AV(1), partnerAvatar: AV(2), together: true };
+  const fresh = lastFix && Date.now() - lastFix.timestamp < 120000;
+  const me = fresh ? { lat: lastFix.coords.latitude, lon: lastFix.coords.longitude, acc: Math.round(lastFix.coords.accuracy), age: Date.now() - lastFix.timestamp } : mapView?.me?.pos || null;
+  return { me, partner: mapView?.partner?.pos || null, meName: 'Ty', partnerName: h(otherName()), meAvatar: AV(state.you), partnerAvatar: AV(state.you === 1 ? 2 : 1), together: ['together', 'recorded'].includes(m.pr?.stage) && !!mapView?.partner?.pos };
+}
+async function refreshMap() {
+  if (route !== 'detect' || DEMO || !token) return;
+  try { mapView = await request('/api/map'); } catch { }
+  const card = document.querySelector('.view:not(.leave) .map');
+  if (card) { const a = card.querySelector('.acc'); if (a) a.innerHTML = `${I.pin()}${h(mapChip(model()))}${I.info()}`; }
+  pairMap.update(mapData());
+}
+function mountMap(v) {
+  const slot = v.querySelector('.map-slot'); if (!slot) return;
+  pairMap.attach(slot);
+  pairMap.start().then(() => { pairMap.attach(slot); slot.closest('.map')?.classList.add('live'); pairMap.update(mapData()); }).catch(() => slot.closest('.map')?.classList.add('offline'));
+  refreshMap();
+  clearInterval(mapTimer); mapTimer = setInterval(() => { if (route === 'detect' && document.visibilityState === 'visible') refreshMap(); else clearInterval(mapTimer); }, 6000);
+}
+
 // What the detection card says
 function detectCopy(m) {
   const p = m.pr || {};
@@ -377,13 +413,16 @@ function viewDetect(m) {
     <h2>${c.title}</h2>
     <p class="sub">${c.sub}</p>
     <div class="map">
-      <img class="bg" src="/img/map.webp" alt="Poglądowa mapa okolicy">
+      <img class="bg" src="/img/map.webp" alt="">
+      <div class="map-slot" aria-label="Mapa: wasze pozycje"></div>
       <span class="glow"></span>
       ${c.together ? I.heart('map-heart') : ''}
       <div class="chips ${c.apart ? 'apart' : ''}"><img class="boy" src="/img/chip-boy.png" alt="${h(state?.members?.[0]?.name || '')}"><img class="girl" src="/img/chip-girl.png" alt="${h(state?.members?.[1]?.name || '')}"></div>
       <div class="map-bubble">${c.together ? `Jesteście razem! ${I.hearts2}` : 'Jeszcze osobno'}</div>
       <button class="locate" data-action="locate" aria-label="Odśwież lokalizację">${I.locate}</button>
-      <div class="acc" data-action="radius" role="button" aria-label="Zasięg wykrywania">${I.pin()}Dokładność: w przybliżeniu${I.info()}</div>
+      <button class="map-btn fit" data-action="map-fit" aria-label="Pokaż nas oboje">${I.heart('', 'url(#hg2)')}</button>
+      <button class="map-btn full" data-action="map-full" aria-label="Mapa na cały ekran"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M2 6V2h4M14 6V2h-4M2 10v4h4M14 10v4h-4"/></svg></button>
+      <div class="acc" data-action="map-share" role="button" aria-label="Widoczność na mapie">${I.pin()}${h(mapChip(m))}${I.info()}</div>
       ${DEMO ? '<span class="preview-tag">Podgląd</span>' : ''}
     </div>
     <div class="caption">${c.cta ? `${I.heart()}<div class="near-cta"><button class="btn-main" data-action="confirm-meeting">Zaliczamy spotkanie ${I.heart('', '#fff')}</button><span>${m.pr?.needsBoth ? 'Potwierdźcie<br>oboje.' : 'Albo zapisze się<br>samo za chwilę.'}</span></div>` : c.check && !DEMO ? `${I.heart()}<div class="near-cta"><button class="btn-main" data-action="check-now">Sprawdź, czy jesteśmy razem</button></div>` : `${I.heart()}<p>Gdy obie osoby są blisko siebie,<br>spotkanie zapisuje się <em>automatycznie.</em></p>`}</div>
@@ -618,6 +657,7 @@ function render(next, animate = false) {
     if (!animate) v.querySelectorAll('.rise').forEach(e => e.classList.remove('rise'));
   }
   views.appendChild(v);
+  if (route === 'detect') mountMap(v);
   // the wardrobe is longer than one screen: let the stage grow with it
   const stage = app.querySelector('.stage');
   stage.style.height = '';
@@ -917,6 +957,9 @@ function renderSheet(quiet = false) {
   else if (sheet === 'nearby') c = `<h2>${m.pr.partnerConfirm ? `${h(otherName())} potwierdza spotkanie` : 'Wygląda na to, że jesteście razem!'}</h2><p>${h(myName())} i ${h(otherName())}: ok. ${fmtDist(m.pr.distance)} od siebie. ${m.pr.partnerConfirm ? 'Potwierdzasz, że jesteście razem?' : m.pr.needsBoth ? 'GPS jest mniej dokładny, więc potwierdźcie spotkanie oboje.' : 'Zaliczamy spotkanie?'}</p>
     <div class="row-btns"><button class="btn-soft" data-action="close">Nie teraz</button><button class="btn-main" data-action="confirm-meeting">${m.pr.myConfirm ? 'Potwierdzone' : 'Jesteśmy razem'} ${I.heart('', '#fff')}</button></div>`;
   else if (sheet === 'check') c = checkSheet(m);
+  else if (sheet === 'map-share') c = `<h2>Pokazywanie na mapie</h2><p>Mapa zawsze pokazuje Tobie Twoją pozycję. ${h(otherName())} zobaczy Cię na mapie tylko wtedy, gdy to włączysz. To osobna zgoda od wykrywania spotkań.</p>
+    <p>Pozycja jest widoczna tylko wtedy, gdy Razem jest otwarte, a starsza niż 2 minuty jest oznaczona jako nieaktualna. Po 15 minutach znika z serwera.</p>
+    <div class="row-btns"><button class="btn-soft" data-action="close">Zamknij</button><button class="btn-main" data-action="map-share-toggle">${mapView?.me?.sharing ? 'Przestań mnie pokazywać' : `Pokazuj mnie ${h(otherName())}`}</button></div>`;
   else if (sheet === 'diag') c = diagSheet(m);
   else if (sheet === 'name') c = `<h2>Twoje imię</h2><p>Zobaczycie je oboje w nagłówku aplikacji.</p>
     <form id="name-form"><label class="field-l" for="myname">Imię</label><input class="field" id="myname" maxlength="28" minlength="2" required autocomplete="given-name" value="${h(myName())}"><button type="submit" class="btn-main">Zapisz ${I.heart('', '#fff')}</button></form>`;
@@ -994,6 +1037,18 @@ async function act(action, el) {
     else if (action === 'mode-create' || action === 'mode-join' || action === 'mode-restore') { mode = action.split('-')[1]; render('onboarding'); }
     else if (['settings', 'history', 'first-date', 'location-info', 'meeting', 'radius', 'diag', 'name'].includes(action)) { if (!state && action !== 'location-info') return; openSheet(action); }
     else if (action === 'check-now') await checkNow();
+    else if (action === 'map-share') { if (DEMO) return toast('To tylko podgląd'); openSheet('map-share'); }
+    else if (action === 'map-share-toggle') { mapView = await request('/api/map-share', { on: !mapView?.me?.sharing }); closeSheet(); toast(mapView.me.sharing ? `${h(otherName())} widzi Cię na mapie ♡` : 'Nie pokazujesz się już na mapie'); refreshMap(); if (mapView.me.sharing && !geoOn) await enableGeo().catch(e => toast(h(e.message))); }
+    else if (action === 'map-fit') pairMap.fit('both');
+    else if (action === 'map-full') {
+      // the full-screen map is its own layer over the app (the card sits in a transformed stage)
+      const full = document.createElement('div'); full.id = 'mapfull'; full.className = 'map-full'; full.setAttribute('role', 'dialog'); full.setAttribute('aria-label', 'Mapa');
+      full.innerHTML = `<div class="map-slot"></div><div class="mf-top"><button class="map-btn close" data-action="map-close" aria-label="Zamknij mapę">${I.close}</button><div class="mf-status">${h(detectCopy(model()).title)} <span>${h(mapChip(model()))}</span></div></div>
+        <div class="mf-tools"><button class="map-btn" data-action="map-fit" aria-label="Pokaż nas oboje">${I.heart('', 'url(#hg2)')}</button><button class="map-btn" data-action="map-me" aria-label="Pokaż mnie">${I.locate}</button></div>`;
+      document.body.appendChild(full); pairMap.attach(full.querySelector('.map-slot')); setTimeout(() => { pairMap.map?.resize(); pairMap.fit('both'); }, 80);
+    }
+    else if (action === 'map-close') { document.getElementById('mapfull')?.remove(); const slot = document.querySelector('.view:not(.leave) .map-slot'); if (slot) { pairMap.attach(slot); setTimeout(() => pairMap.fit('both'), 60); } }
+    else if (action === 'map-me') pairMap.fit('me');
     else if (action === 'house') {
       closeSheet();
       const r = el.getBoundingClientRect(); houseOrigin = [r.left + r.width / 2, r.top + r.height / 2];
@@ -1103,7 +1158,7 @@ async function act(action, el) {
 }
 
 root.addEventListener('click', e => { const b = e.target.closest('[data-action]'); if (b) { e.stopPropagation(); act(b.dataset.action, b); } });
-document.addEventListener('click', e => { if (!e.target.closest('#sheet, #ov, #house')) return; const b = e.target.closest('[data-action]'); if (b) act(b.dataset.action, b); });
+document.addEventListener('click', e => { if (!e.target.closest('#sheet, #ov, #house, #mapfull')) return; const b = e.target.closest('[data-action]'); if (b) act(b.dataset.action, b); });
 document.addEventListener('submit', async e => {
   e.preventDefault(); const form = e.target; if (working) return; working = true;
   const btn = form.querySelector('[type=submit]'); if (btn) btn.disabled = true;
@@ -1212,6 +1267,7 @@ async function send(path = '/api/location', force = false) {
   try {
     const next = await request(path, { lat: c.latitude, lon: c.longitude, accuracy: c.accuracy, ts: lastFix.timestamp });
     state = next; saveState();
+    if (route === 'detect') pairMap.update(mapData());
     if (next.count !== old) { render(route); afterCountChange(old); }
     else if (next.proximity?.stage + next.proximity?.reason !== oldStage && !overlay) { render(route); if (sheet === 'diag' || sheet === 'check') renderSheet(true); }
     promptMeeting();

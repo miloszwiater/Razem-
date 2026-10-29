@@ -25,7 +25,7 @@ async function ensureSchema(env){
   for(const [c,def] of list){if(cols.has(c))continue;try{await env.DB.prepare(`ALTER TABLE ${table} ADD COLUMN ${c} ${def}`).run()}catch(e){if(!/duplicate column/i.test(String(e?.message)))throw e}}
  };
  await addColumns('pair_prefs',[['claimed',"TEXT NOT NULL DEFAULT '[]'"],['version','INTEGER NOT NULL DEFAULT 0'],['last_change','TEXT'],['room',"TEXT NOT NULL DEFAULT '{}'"],['achieved',"TEXT NOT NULL DEFAULT '{}'"]]);
- await addColumns('members',[['geo_on','INTEGER NOT NULL DEFAULT 0'],['ping_at','INTEGER']]);
+ await addColumns('members',[['geo_on','INTEGER NOT NULL DEFAULT 0'],['ping_at','INTEGER'],['map_on','INTEGER NOT NULL DEFAULT 0']]);
  await addColumns('pairs',[['confirm1_at','INTEGER'],['confirm2_at','INTEGER'],['notified_near_at','INTEGER']]);
  await addColumns('meetings',[['session_key','TEXT']]);
  await env.DB.batch([
@@ -146,6 +146,14 @@ async function afterPosition(env,ctx,m,now=Date.now()){
    notify(env,ctx,m.pair_id,m.id,{title:'Jesteście niedaleko siebie!',body:'Otwórz Razem 💗 Puszystek czeka na wasze spotkanie.',tag:'near'});
   }
  }
+}
+// The map: my own last position, and my partner's only if they chose to show
+// it. Positions older than 2 min are marked stale; they disappear after 15 min.
+async function mapView(env,m){
+ const rows=await memberRows(env,m.pair_id),now=Date.now();
+ const me=rows.find(r=>r.slot===m.slot),pt=rows.find(r=>r.slot!==m.slot);
+ const pos=r=>r&&r.latitude!=null?{lat:r.latitude,lon:r.longitude,acc:Math.round(r.accuracy),age:now-r.location_at,stale:now-r.location_at>RULES.FRESH}:null;
+ return {me:{name:me.display_name,sharing:!!me.map_on,pos:pos(me)},partner:pt?{name:pt.display_name,sharing:!!pt.map_on,pos:pt.map_on?pos(pt):null}:null};
 }
 function proximityOut(v,me){
  return {...v,pingAt:Number(me?.ping_at)||null};
@@ -327,6 +335,12 @@ async function api(req,env,path,ctx){
   await env.DB.prepare('INSERT INTO member_recovery(member_id,code_hash,created_at) VALUES (?,?,?) ON CONFLICT(member_id) DO UPDATE SET code_hash=excluded.code_hash,created_at=excluded.created_at').bind(m.id,await sha('login:'+c),Date.now()).run();
   return ok({code:c});
  }
+ if(method==='POST'&&path==='/api/map-share'){
+  // showing my position to my partner on the map is a separate, explicit choice
+  const b=await body(req);await env.DB.prepare('UPDATE members SET map_on=? WHERE id=?').bind(b?.on?1:0,m.id).run();
+  return ok(await mapView(env,m));
+ }
+ if(method==='GET'&&path==='/api/map')return ok(await mapView(env,m));
  if(method==='POST'&&path==='/api/name'){
   // each person's own name, shown to both phones
   const b=await body(req),name=norm(b?.name);if(name.length<2)return bad('Podaj imię (minimum 2 znaki).');

@@ -1,5 +1,5 @@
-const VERSION = 'razem-static-v8';
-const CORE = ['/', '/index.html', '/style.css', '/app.js', '/rewards.js', '/puszystek.js', '/medals.js', '/house.js', '/room.js', '/icon.svg', '/apple-touch-icon.png', '/icon-192.png', '/img/logo-razem.svg', '/manifest.webmanifest'];
+const VERSION = 'razem-static-v9';
+const CORE = ['/', '/index.html', '/style.css', '/app.js', '/rewards.js', '/puszystek.js', '/medals.js', '/house.js', '/room.js', '/map.js', '/map-style.json', '/icon.svg', '/apple-touch-icon.png', '/icon-192.png', '/img/logo-razem.svg', '/manifest.webmanifest'];
 self.addEventListener('install', event => { event.waitUntil(caches.open(VERSION).then(c => c.addAll(CORE))); self.skipWaiting(); });
 self.addEventListener('activate', event => { event.waitUntil(caches.keys().then(keys => Promise.all(keys.filter(k => k !== VERSION).map(k => caches.delete(k))))); self.clients.claim(); });
 // Network first, cache as offline fallback. The API is never cached.

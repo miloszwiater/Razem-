@@ -1074,6 +1074,40 @@ img { display: block; user-select: none; -webkit-user-drag: none; }
 
 .btn-main.sm { width: auto; height: calc(36 * var(--u)); margin: 0; padding: 0 calc(16 * var(--u)); font-size: calc(13.4 * var(--u)); flex: none; }
 .set-note { margin: calc(14 * var(--u)) calc(4 * var(--u)) calc(12 * var(--u)); font-size: calc(12 * var(--u)); line-height: calc(17 * var(--u)); color: #8a7fa3; }
+/* ---------------------------------------------------------------- Razem Pixel Map */
+.map-slot { position: absolute; inset: 0; z-index: 1; }
+.pm-host, .pm-host.maplibregl-map { position: absolute; inset: 0; background: #fbf1ea; }
+.pm-host .maplibregl-canvas { image-rendering: pixelated; outline: none; }
+.map .bg { transition: opacity .5s ease; }
+.map.live .bg, .map.live .glow, .map.live .chips, .map.live .map-heart { opacity: 0; pointer-events: none; }
+.map.live .map-bubble, .map .locate, .map .acc, .map .map-btn, .map .preview-tag { z-index: 3; }
+.map-btn { position: absolute; z-index: 3; width: calc(32 * var(--u)); height: calc(32 * var(--u)); border-radius: 50%; display: grid; place-items: center; background: #fffdfc; box-shadow: 0 calc(3 * var(--u)) calc(10 * var(--u)) rgba(120, 100, 140, .16); color: #8f80ab; }
+.map-btn svg { width: calc(15 * var(--u)); height: calc(15 * var(--u)); }
+.map-btn.fit { left: calc(307 * var(--u)); top: calc(54 * var(--u)); } .map-btn.full { left: calc(307 * var(--u)); top: calc(92 * var(--u)); }
+.map:not(.live) .map-btn { display: none; }
+.map-full { position: fixed; inset: 0; z-index: 46; background: #fbf1ea; animation: fade .3s ease both; }
+.map-full .map-slot { position: absolute; inset: 0; }
+.mf-top { position: absolute; left: 12px; right: 12px; top: calc(var(--top) + 6px); z-index: 3; display: flex; gap: 10px; align-items: center; }
+.mf-status { flex: 1; min-width: 0; padding: 8px 14px; border-radius: 14px; background: rgba(255, 250, 246, .94); box-shadow: inset 0 0 0 2px #fff, 0 0 0 2px #4a2a5c, 0 4px 12px rgba(74, 42, 92, .2); font-size: 14px; font-weight: 800; color: #2b1a42; }
+.mf-status span { display: block; font-size: 11.5px; font-weight: 600; color: #7a6c94; }
+.mf-tools { position: absolute; right: 12px; bottom: calc(var(--sab) + 30px); z-index: 3; display: grid; gap: 10px; }
+.map-full .map-btn { position: static; width: 44px; height: 44px; box-shadow: inset 0 0 0 2px #fff, 0 0 0 2px #4a2a5c, 0 4px 10px rgba(74, 42, 92, .2); }
+.map-full .map-btn svg { width: 18px; height: 18px; }
+.map:not(.full) .pm-av { width: 30px; height: 30px; }
+.map .pm-tag { display: none; }
+.pm-mark { display: grid; justify-items: center; cursor: default; }
+.pm-av { width: 40px; height: 40px; border-radius: 50%; overflow: hidden; box-shadow: 0 0 0 2px #fff, 0 0 0 4px #4a2a5c, 0 4px 8px rgba(74, 42, 92, .3); background: #fff; animation: pm-bob 2.4s steps(2) infinite; }
+.pm-mark.partner .pm-av { box-shadow: 0 0 0 2px #fff, 0 0 0 4px #f2588f, 0 4px 8px rgba(74, 42, 92, .3); animation-delay: -1.2s; }
+.pm-av img { width: 100%; height: 100%; object-fit: cover; }
+.pm-av.stale { filter: grayscale(.9); opacity: .6; animation: none; }
+.pm-tag { margin-top: 5px; padding: 2px 8px; border-radius: 6px; background: #4a2a5c; color: #fff; font-size: 11px; font-weight: 700; white-space: nowrap; box-shadow: 0 2px 0 rgba(0, 0, 0, .15); }
+.pm-mark.partner .pm-tag { background: #f2588f; }
+.pm-tail { width: 8px; height: 6px; background: inherit; }
+.pm-heart { display: block; width: 28px; height: 24px; background: url(/img/ui/map-heart.png) center / contain no-repeat; image-rendering: pixelated; animation: beat 1.6s steps(3) infinite; filter: drop-shadow(0 0 6px rgba(255, 255, 255, .9)); }
+.pm-host.together::after { content: ''; position: absolute; inset: 0; pointer-events: none; box-shadow: inset 0 0 40px rgba(242, 88, 143, .35); animation: rays 3s ease-in-out infinite; }
+.pm-host .maplibregl-ctrl-attrib { font-size: 9px; background: rgba(255, 250, 246, .85); }
+@keyframes pm-bob { 50% { translate: 0 -2px; } }
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .001ms !important; animation-iteration-count: 1 !important; animation-delay: 0s !important; transition-duration: .001ms !important; transition-delay: 0s !important; }
   .rise-heart, .burst-heart, .pz-fx, .ov-rays, .pz-glint, .ov-sparks, .ov-bokeh, .ri-rays, .item.ready .art::after { display: none; }
