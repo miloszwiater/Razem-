@@ -30,3 +30,12 @@ CREATE TABLE IF NOT EXISTS meetings (
 );
 CREATE INDEX IF NOT EXISTS ix_meetings_pair ON meetings(pair_id,occurred_at DESC);
 CREATE INDEX IF NOT EXISTS ix_members_pair ON members(pair_id);
+
+CREATE TABLE IF NOT EXISTS pair_prefs (
+ pair_id TEXT PRIMARY KEY REFERENCES pairs(id),
+ radius INTEGER NOT NULL DEFAULT 150,
+ equipped TEXT NOT NULL DEFAULT '[]',
+ opened TEXT NOT NULL DEFAULT '[]',
+ seen_count INTEGER NOT NULL DEFAULT 0,
+ updated_at INTEGER NOT NULL DEFAULT 0
+);
