@@ -9,8 +9,18 @@
 @font-face { font-family: 'DM Sans'; font-style: normal; font-weight: 800; font-display: swap; src: url('/fonts/dmsans-800.woff2') format('woff2'); }
 
 :root {
+  /* One design px. The 390 x 860 stage scales with the screen width AND
+     height, so the whole home screen fits the phone without scrolling:
+     the stage starts 40 dp above the safe top (the design's own status-bar
+     band) and the speech bubble (837 dp) must end above the home indicator.
+     --sat/--sab are the safe-area insets (tests override them). */
   --col: min(100vw, 440px);
-  --u: calc(var(--col) / 390);
+  --sat: env(safe-area-inset-top, 0px);
+  --sab: env(safe-area-inset-bottom, 0px);
+  --top: max(var(--sat), 12px);
+  --vh: 100vh;
+  --u: min(calc(var(--col) / 390), calc((var(--vh) - var(--top) - var(--sab) - 6px) / 797));
+  --stage-top: calc(var(--top) - 40dp);
   --ink: #2a1d3e;
   --ink-2: #3b2d50;
   --muted: #6e6489;
@@ -24,7 +34,6 @@
   --shadow: 0 2dp 10dp rgba(170, 120, 140, .10), 0 10dp 26dp rgba(170, 120, 150, .10);
   --ease: cubic-bezier(.22, .9, .3, 1);
   --spring: cubic-bezier(.34, 1.56, .64, 1);
-  --safe-top: max(0px, calc(env(safe-area-inset-top, 0px) - 44px));
   color-scheme: light;
   font-family: 'DM Sans', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
   color: var(--ink);
@@ -35,17 +44,26 @@
   -webkit-font-smoothing: antialiased;
 }
 
+@supports (height: 100dvh) { :root { --vh: 100dvh; } }
+
 * { box-sizing: border-box; }
-html, body { margin: 0; min-height: 100%; }
+/* A fixed, native-feeling shell: the page itself never scrolls, rubber-bands
+   or pinch-zooms (system Zoom and text-size settings keep working). Only the
+   wardrobe and sheets scroll, inside their own containers. */
+html, body { margin: 0; height: 100%; overflow: hidden; overscroll-behavior: none; }
+#app { height: 100%; }
 body {
-  min-height: 100dvh;
+  position: fixed; inset: 0;
+  touch-action: pan-x pan-y;
+  -webkit-user-select: none; user-select: none;
+  -webkit-touch-callout: none;
   background:
     radial-gradient(120% 60% at 0% 0%, #fde9ee 0%, transparent 60%),
     radial-gradient(120% 60% at 100% 100%, #e9e6fb 0%, transparent 60%),
     #f6ece8;
-  overflow-x: hidden;
   -webkit-tap-highlight-color: transparent;
 }
+input, textarea { -webkit-user-select: text; user-select: text; font-size: max(16px, 1em); }
 button { font: inherit; color: inherit; border: 0; background: none; padding: 0; cursor: pointer; }
 button:focus-visible, [tabindex]:focus-visible, input:focus-visible { outline: 2dp solid #a99cf0; outline-offset: 2dp; }
 img { display: block; user-select: none; -webkit-user-drag: none; }
@@ -55,21 +73,37 @@ img { display: block; user-select: none; -webkit-user-drag: none; }
 .app {
   position: relative;
   width: var(--col);
-  min-height: 100dvh;
+  height: 100%;
   margin: 0 auto;
-  background: linear-gradient(#fef8f4 0, #fcf4ef 400dp, #f9efea 860dp);
+  /* when the stage is narrower than the screen (short phones), the header
+     plate and the meadow continue into the side margins, stretched */
+  --plate: url(/img/header-home.webp);
+  --floor-img: url(/img/meadow-home.webp); --floor-top: 652.8dp; --floor-h: 207.2dp; --floor: #fdede8;
+  background:
+    var(--plate) center var(--stage-top) / 100% 227dp no-repeat,
+    var(--floor-img) center calc(var(--stage-top) + var(--floor-top)) / 100% var(--floor-h) no-repeat,
+    linear-gradient(transparent calc(var(--stage-top) + var(--floor-top) + var(--floor-h) - 2px), var(--floor) 0),
+    linear-gradient(#fef8f4 0, #fcf4ef 400dp, #f9efea 860dp);
   overflow: hidden;
+  overflow: clip; /* not even scrollable from script or focus */
+  display: flow-root; /* keeps the stage's negative top margin inside (no margin collapse) */
+  overscroll-behavior: none;
   isolation: isolate;
 }
+.app[data-route="rewards"] { --plate: url(/img/header-rewards.webp); --floor-img: url(/img/unlock-rewards.webp); --floor-top: 720.7dp; --floor-h: 139.1dp; --floor: #ded0b2; }
+.app[data-route="detect"] { --plate: url(/img/header-detect.webp); --floor-img: url(/img/meadow-detect.webp); --floor-top: 706.8dp; --floor-h: 153.3dp; --floor: #fde9da; }
+.app[data-route="collection"] { --plate: url(/img/header-rewards.webp); --floor-img: none; --floor: transparent; overflow: hidden auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; touch-action: pan-y; }
 @media (min-width: 441px) {
   .app { box-shadow: 0 0 0 1px rgba(200, 170, 190, .25), 0 30px 80px rgba(150, 110, 150, .18); }
 }
-.stage { position: relative; height: 860dp; margin-top: var(--safe-top); }
+.stage { position: relative; width: 390dp; height: 860dp; margin: var(--stage-top) auto 0; }
 .stage.tall { height: auto; min-height: 860dp; }
 
 /* header plate: one per screen, cross-faded on navigation */
 .plates { position: absolute; inset: 0 0 auto 0; height: 227dp; pointer-events: none; }
 .plates img { position: absolute; inset: 0; width: 100%; height: auto; opacity: 0; transition: opacity .5s ease; }
+/* soft side edges, so the stretched copy in the margins blends in */
+.plates img, .meadow-bg, .unlock > .plate { -webkit-mask-image: linear-gradient(90deg, transparent, #000 10dp, #000 calc(100% - 10dp), transparent); mask-image: linear-gradient(90deg, transparent, #000 10dp, #000 calc(100% - 10dp), transparent); }
 .app[data-route="home"] .plate-home,
 .app[data-route="onboarding"] .plate-home,
 .app[data-route="rewards"] .plate-rewards,
@@ -85,7 +119,8 @@ img { display: block; user-select: none; -webkit-user-drag: none; }
 }
 .tagline i { font-style: normal; padding: 0 7.6dp; }
 .gear, .back {
-  position: absolute; width: 44dp; height: 44dp; border-radius: 50%;
+  /* never below Apple's 44 pt tap target, even when the stage is scaled down */
+  position: absolute; width: max(44dp, 44px); height: max(44dp, 44px); margin: calc((44dp - max(44dp, 44px)) / 2); border-radius: 50%;
   display: grid; place-items: center; color: #8378a3; transition: transform .25s var(--spring), opacity .35s ease;
 }
 .gear { left: 335.4dp; top: 48.1dp; }
@@ -365,7 +400,7 @@ img { display: block; user-select: none; -webkit-user-drag: none; }
 .sheet-bg { position: fixed; inset: 0; z-index: 50; display: flex; align-items: flex-end; justify-content: center; background: rgba(70, 40, 70, .22); backdrop-filter: blur(3px); -webkit-backdrop-filter: blur(3px); animation: fade .3s ease both; }
 .sheet-bg.out { animation: fade-out .25s ease both; }
 .sheet {
-  width: var(--col); max-height: 86dvh; overflow: auto; padding: 22dp 20dp calc(22dp + env(safe-area-inset-bottom, 0px));
+  width: var(--col); max-height: calc(var(--vh) - var(--top) - 16px); overflow: auto; overscroll-behavior: contain; touch-action: pan-y; padding: 22dp 20dp calc(22dp + env(safe-area-inset-bottom, 0px));
   border-radius: 26dp 26dp 0 0; background: linear-gradient(#fffaf8, #fdf3f4);
   box-shadow: 0 -10dp 30dp rgba(150, 90, 130, .18); animation: sheet-up .5s var(--ease) both;
 }
@@ -395,7 +430,7 @@ img { display: block; user-select: none; -webkit-user-drag: none; }
   transform: translate(-50%, 30dp); opacity: 0; pointer-events: none; transition: transform .45s var(--spring), opacity .3s ease;
 }
 .toast.show { transform: translate(-50%, 0); opacity: 1; }
-.loading { min-height: 100dvh; display: grid; place-items: center; }
+.loading { height: 100%; display: grid; place-items: center; }
 .loading img { width: 140dp; animation: float-y 2s ease-in-out infinite; }
 
 /* particles */
@@ -432,7 +467,8 @@ img { display: block; user-select: none; -webkit-user-drag: none; }
 .pz-base, .pz-ear, .pz-blink { left: 0; top: 0; width: 100%; }
 .pz-ear { transition: transform .35s var(--spring); }
 .pz-blink { opacity: 0; }
-.pz-item { transform: translateY(var(--ty, 0)); }
+.pz-item { position: absolute; display: block; transform: translateY(var(--ty, 0)); }
+.pusz .pz-item > img { position: relative; width: 100%; }
 .pz-back .pz-item.l { transform-origin: 100% 60%; animation: flap-l 2.4s ease-in-out infinite; }
 .pz-back .pz-item.r { transform-origin: 0 60%; animation: flap-r 2.4s ease-in-out infinite; }
 .pz-tail { transform-origin: 10% 90%; animation: tail-idle 4s ease-in-out infinite; }
@@ -614,7 +650,85 @@ img { display: block; user-select: none; -webkit-user-drag: none; }
 .tile .art .gen .badge-art { width: 70%; }
 .nav-arrow[aria-disabled="true"] { opacity: .35; }
 
+/* ================================================================ etap 3 */
+/* ---------------------------------------------------------------- worn items */
+.pz-earwrap { position: absolute; inset: 0; transition: transform .35s var(--spring); }
+.pusz.act-ears .pz-earwrap { transform: rotate(-9deg); }
+/* the bow / scarf follow the breathing body with a small lag */
+.pz-neck { transform-origin: 50% 0; animation: neck-sway 3.2s ease-in-out infinite; }
+.pz-earwrap .pz-item { transform-origin: 50% 50%; animation: ear-bob 3.2s ease-in-out infinite; }
+/* crowns: a soft light sweep every few seconds */
+/* the sweep moves with transform only (compositor), clipped to the crown's own pixels */
+.pz-glint { position: absolute; inset: 0; overflow: hidden; pointer-events: none; -webkit-mask-size: 100% 100%; mask-size: 100% 100%; }
+.pz-glint::before { content: ''; position: absolute; top: 0; bottom: 0; left: -100%; width: 100%; background: linear-gradient(105deg, transparent 20%, rgba(255, 255, 255, .9) 50%, transparent 80%); animation: glint 4.6s ease-in-out infinite; will-change: transform; }
+.pz-decor { pointer-events: none; }
+.pz-decor[data-item="balloons"] { transform-origin: 70% 100%; animation: balloon-bob 4.8s ease-in-out infinite; }
+.pz-decor[data-item="lanterns"] > img { animation: lantern-glow 3.6s ease-in-out infinite; }
+.pz-decor[data-item="garden"] { transform-origin: 50% 100%; animation: garden-sway 5s ease-in-out infinite; }
+/* a newly worn item drops in with a sparkle */
+.pusz .pz-item.pz-new { animation: item-in .9s var(--spring) both; }
+.pz-item.pz-new::after { content: ''; position: absolute; left: 50%; top: 50%; width: 140%; aspect-ratio: 1; translate: -50% -50%; border-radius: 50%; pointer-events: none; background: radial-gradient(circle, rgba(255, 255, 255, .95), rgba(255, 214, 120, .5) 35%, transparent 65%); animation: item-flash .9s ease-out both; }
+.pz-back .pz-item.pz-new.l, .pz-back .pz-item.pz-new.r { animation: item-in .9s var(--spring) both; }
+
+@keyframes neck-sway { 0%, 100% { rotate: 0deg; } 30% { rotate: -2.2deg; } 70% { rotate: 2.2deg; } }
+@keyframes ear-bob { 0%, 100% { rotate: 0deg; } 50% { rotate: -6deg; } }
+@keyframes glint { 0%, 55% { transform: translateX(0); } 85%, 100% { transform: translateX(200%); } }
+@keyframes balloon-bob { 0%, 100% { rotate: -2deg; translate: 0 0; } 50% { rotate: 2.5deg; translate: 0 -3%; } }
+@keyframes lantern-glow { 0%, 100% { opacity: .82; } 50% { opacity: 1; } }
+@keyframes garden-sway { 0%, 100% { transform: skewX(0); } 50% { transform: skewX(-2deg); } }
+@keyframes item-in { 0% { opacity: 0; translate: 0 -45%; scale: .3; } 55% { opacity: 1; translate: 0 6%; scale: 1.15; } 100% { translate: 0 0; scale: 1; } }
+@keyframes item-flash { 0% { opacity: 0; scale: .2; } 30% { opacity: 1; } 100% { opacity: 0; scale: 1.3; } }
+
+/* themes on the meadow */
+.view.lavender .meadow-bg, .ov-stage.lavender .ov-meadow, .view.lavender .unlock > .plate { filter: hue-rotate(28deg) saturate(.85) brightness(1.03); }
+.view.sunset .unlock > .plate { filter: sepia(.18) saturate(1.25) hue-rotate(-12deg) brightness(1.02); }
+.theme-glow { position: absolute; left: 0; right: 0; pointer-events: none; mix-blend-mode: multiply; }
+.theme-glow.sunset { background: linear-gradient(180deg, rgba(255, 170, 200, .30), rgba(255, 196, 160, .18) 60%, transparent); }
+.theme-glow.lavender { background: linear-gradient(180deg, rgba(190, 175, 255, .30), rgba(214, 200, 255, .16) 60%, transparent); }
+
+/* pinned pair badge on the home counter card */
+.hero-pin { position: absolute; left: 14dp; top: 12dp; width: 34dp; height: 34dp; z-index: 2; display: grid; place-items: center; animation: pin-in .7s var(--spring) .4s both; }
+.hero-pin .badge-art { width: 30dp; font-size: 11dp; box-shadow: inset 0 0 0 2dp #fff3c4, 0 0 0 1.6dp #e59a1c, 0 3dp 8dp rgba(220, 150, 60, .3); }
+.hero-pin .badge-art.pink { box-shadow: inset 0 0 0 2dp #fff, 0 0 0 1.6dp #e2669a, 0 3dp 8dp rgba(220, 100, 150, .3); }
+.hero-pin .badge-art.silver { box-shadow: inset 0 0 0 2dp #fff, 0 0 0 1.6dp #8f99bb, 0 3dp 8dp rgba(120, 130, 170, .3); }
+.hero-pin .badge-art.diamond { box-shadow: inset 0 0 0 2dp #fff, 0 0 0 1.6dp #6a8fe6, 0 3dp 8dp rgba(100, 130, 220, .3); }
+.hero-pin { overflow: hidden; border-radius: 50%; }
+.hero-pin::after { content: ''; position: absolute; top: 0; bottom: 0; left: -100%; width: 100%; background: linear-gradient(115deg, transparent 30%, rgba(255, 255, 255, .75) 50%, transparent 70%); animation: glint 5.5s ease-in-out 1s infinite; }
+@keyframes pin-in { from { opacity: 0; transform: scale(.4) rotate(-30deg); } }
+
+/* "to claim" counters */
+.gift .dot, .see-all .dot, .set .dot { position: absolute; right: -4dp; top: -4dp; min-width: 16dp; height: 16dp; padding: 0 4dp; border-radius: 99dp; display: grid; place-items: center; background: #f2588f; color: #fff; font-size: 9.5dp; font-weight: 800; box-shadow: 0 0 0 1.6dp #fff; animation: pop .6s var(--spring) both; }
+.see-all .dot { position: static; margin-left: 2dp; }
+.set .dot { position: static; display: inline-grid; margin-left: 6dp; vertical-align: 1dp; }
+
+/* ---------------------------------------------------------------- wardrobe v3 */
+.wardrobe .claim-all { position: absolute; left: 18dp; bottom: 14dp; z-index: 2; height: 30dp; padding: 0 14dp; border-radius: 99dp; display: flex; align-items: center; gap: 6dp; background: linear-gradient(180deg, #fd93b8, #f97aa5); box-shadow: 0 0 0 2dp #fff, 0 5dp 12dp rgba(240, 110, 160, .3); color: #fff; font-size: 12dp; font-weight: 700; animation: wiggle 3.2s ease-in-out 1s infinite; }
+.wardrobe .claim-all svg { width: 14dp; height: 14dp; }
+.cats { scroll-snap-type: x proximity; touch-action: pan-x; overscroll-behavior-x: contain; }
+.cats button { scroll-snap-align: start; }
+.item.ready .art { box-shadow: 0 0 0 2.2dp #ffd56b, 0 0 14dp rgba(255, 200, 90, .55); animation: new-item 2.4s ease-in-out infinite; }
+.item .claim { position: absolute; left: 50%; bottom: -7dp; translate: -50% 0; padding: 2dp 8dp; border-radius: 99dp; background: linear-gradient(180deg, #ffcf5c, #f5a623); color: #fff; font-size: 8.6dp; font-weight: 800; letter-spacing: .3dp; text-transform: uppercase; white-space: nowrap; box-shadow: 0 0 0 1.6dp #fff, 0 3dp 6dp rgba(220, 150, 40, .35); }
+.item .art img.decor-art { width: 86%; height: auto; object-fit: contain; }
+.coll-note { margin: 12dp 14dp 0; text-align: center; font-size: 11dp; line-height: 15dp; color: #8a7da3; }
+
+/* item sheet */
+.cond { display: flex; align-items: center; gap: 10dp; padding: 10dp 12dp; margin: 0 0 10dp; border-radius: 14dp; background: #fff; box-shadow: inset 0 0 0 1dp #f4e7ec; }
+.cond .ck { flex: none; width: 24dp; height: 24dp; border-radius: 50%; display: grid; place-items: center; background: #efe8f3; color: #9b8cb3; }
+.cond .ck svg { width: 11dp; height: 11dp; }
+.cond.met .ck { background: #f8789f; color: #fff; }
+.cond div { flex: 1; min-width: 0; }
+.cond b { display: block; font-size: 13dp; color: #2b1a42; }
+.cond small { display: block; font-size: 11.4dp; color: #7a6f92; }
+.cond .bar { height: 6dp; margin-top: 5dp; border-radius: 9dp; background: #efe6ec; overflow: hidden; }
+.cond .bar i { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, #fb98bb, #f98ab3); }
+.sheet .swap-note { margin: -4dp 0 10dp; font-size: 12dp; color: #8a7da3; text-align: center; }
+.sheet.static { animation: none; }
+.sheet-bg.static { animation: none; }
+.pin-art { display: grid; place-items: center; height: 150dp; }
+.pin-art .badge-art { width: 96dp; font-size: 30dp; }
+.login-code { font-size: 24dp; font-weight: 800; letter-spacing: 2.5dp; color: #2b1a42; text-align: center; margin: 4dp 0 10dp; font-variant-numeric: tabular-nums; -webkit-user-select: all; user-select: all; }
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .001ms !important; animation-iteration-count: 1 !important; animation-delay: 0s !important; transition-duration: .001ms !important; transition-delay: 0s !important; }
-  .rise-heart, .burst-heart, .pz-fx, .ov-confetti, .ov-rays { display: none; }
+  .rise-heart, .burst-heart, .pz-fx, .ov-confetti, .ov-rays, .pz-glint { display: none; }
 }
