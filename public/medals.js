@@ -4,7 +4,7 @@
 import { BY_ID } from './rewards.js';
 
 // What each badge depicts.
-const EMBLEM = { first: 'heart', week: 'sun', badge: 'wingheart', seventy5: 'star', hundred: 'laurel', legend: 'crown' };
+const EMBLEM = { first: 'heart', week: 'sun', badge: 'wingheart', seventy5: 'star', hundred: 'laurel', legend: 'crown', streak3: 'flame', streak30: 'flame', streak100: 'flame' };
 
 // Metal per rarity: rim gradient, inner disc, bead + outline colour, ribbon pair.
 const METAL = {
@@ -22,6 +22,9 @@ const EMBLEMS = {
   heart: () => heart(32, 31, 1.15, 'url(#m-heart)') + shine(32, 31, 1.15) +
     // tiny engraved flourishes either side
     `<path d="M17.5 31.5q2.5-2.4 4.6-.6M46.5 31.5q-2.5-2.4-4.6-.6" fill="none" stroke="#e58fb3" stroke-width="1.1" stroke-linecap="round" opacity=".8"/>`,
+  // a flame with the number of days in a row
+  flame: r => `<path fill="url(#m-sun)" stroke="#e8962e" stroke-width="1" stroke-linejoin="round" d="M32 17.5c1.8 4.6 8.6 7.6 8.6 14.4 0 5.2-3.9 8.6-8.6 8.6s-8.6-3.4-8.6-8.6c0-3.8 2.2-5.8 3.6-7.8.4 2.4 1.4 3.6 2.6 4.2-.6-4.4.2-7.8 2.4-10.8z"/>` +
+    `<text x="32" y="36.6" text-anchor="middle" font-family="DM Sans, sans-serif" font-weight="800" font-size="${r?.at >= 100 ? 7.4 : 9}" fill="#8a3d12">${r?.at ?? ''}</text>`,
   sun: () => {
     const rays = Array.from({ length: 7 }, (_, i) => { const a = (-90 + i * 360 / 7) * Math.PI / 180; return `<line x1="${(32 + Math.cos(a) * 9).toFixed(1)}" y1="${(31 + Math.sin(a) * 9).toFixed(1)}" x2="${(32 + Math.cos(a) * 13).toFixed(1)}" y2="${(31 + Math.sin(a) * 13).toFixed(1)}"/>`; }).join('');
     return `<g stroke="#f2a531" stroke-width="2.4" stroke-linecap="round">${rays}</g><circle cx="32" cy="31" r="7.4" fill="url(#m-sun)"/>` +
@@ -55,7 +58,7 @@ export function medalSVG(r, rar, cls = '') {
     <circle cx="32" cy="31" r="23.6" fill="url(#${m.rim})" stroke="${m.line}" stroke-width="1.2"/>
     <g fill="${m.bead}" opacity=".9">${beads}</g>
     <circle cx="32" cy="31" r="16.6" fill="url(#${m.disc})" stroke="${m.line}" stroke-width=".9"/>
-    ${em()}
+    ${em(r)}
     <path d="M14.8 22.4A19 19 0 0 1 41.6 13" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" opacity=".55"/>
     ${sparkles}
   </svg>`;

@@ -44,6 +44,7 @@ export const ITEMS = {
   curtains: I('sypialnia', { src: 'curtains', w: 64, h: 54, zone: 'fixed', def: [48, 11] }),
   starlights: I('sypialnia', { src: 'starlights', w: 156, h: 16, zone: 'fixed', def: [2, 3] }),
   wardrobe: I('sypialnia', { src: 'wardrobe', w: 34, h: 56, zone: 'floor', foot: 8, def: [2, 62], shadow: 32 }),
+  heartCalendar: I('sypialnia', { src: 'heart-calendar', w: 24, h: 26, zone: 'wall', def: [8, 46] }),
   plushBear: I('sypialnia', { src: 'plush-bear', w: 16, h: 16, zone: 'floor', foot: 5, def: [96, 150], shadow: 16 }),
   nightLamp: I('sypialnia', { src: 'night-lamp', w: 12, h: 18, zone: 'surface', on: ['nightstand'], foot: 4, def: [82, 130], shadow: 16 }),
   wallLavender: I('sypialnia', { thumb: 'thumb-wall-lavender', w: 40, h: 30, zone: 'bg' }),
@@ -65,6 +66,7 @@ export const ITEMS = {
   rugSalon: I('salon', { src: 'rug-salon', w: 70, h: 22, zone: 'rug', def: [44, 138] }),
   toyMouse: I('salon', { src: 'toy-mouse', w: 14, h: 9, zone: 'floor', foot: 4, def: [112, 152], shadow: 16 }),
   pillowHeart: I('salon', { src: 'pillow-heart', w: 22, h: 16, zone: 'floor', foot: 6, def: [30, 148], shadow: 24 }),
+  flameTrophy: I('salon', { src: 'flame-trophy', w: 18, h: 26, zone: 'floor', foot: 4, def: [46, 96], shadow: 16 }),
   wallPeach: I('salon', { thumb: 'thumb-salon-peach', w: 40, h: 30, zone: 'bg' }),
   // --- kuchnia
   counterBasic: I('kuchnia', { src: 'counter-basic', w: 40, h: 34, zone: 'floor', foot: 8, def: [0, 84], shadow: 44, top: 2, basic: 'hCounter' }),

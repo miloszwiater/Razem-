@@ -34,10 +34,10 @@ const h = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&
 const plural = (n, a, b, c) => { const v = Math.abs(n); return v === 1 ? a : (v % 10 >= 2 && v % 10 <= 4 && (v % 100 < 12 || v % 100 > 14)) ? b : c; };
 const meetings = n => `${n} ${plural(n, 'spotkanie', 'spotkania', 'spotkań')}`;
 // progress toward a reward in its own currency: meetings, quizzes or days full of energy
-const PROG_KEY = { meetings: 'meetings', quiz: 'quizzes', care: 'care' };
+const PROG_KEY = { meetings: 'meetings', quiz: 'quizzes', care: 'care', streak: 'streak' };
 const progOf = (r, m) => m.prog[PROG_KEY[r.source || 'meetings']] ?? 0;
 const units = (r, k) => `${k} ${plural(k, ...SOURCE_UNIT[r.source || 'meetings'])}`;
-const ALL_PROG = { meetings: 1e9, quizzes: 1e9, care: 1e9 };
+const ALL_PROG = { meetings: 1e9, quizzes: 1e9, care: 1e9, streak: 1e9 };
 const dp = v => `calc(${(+v).toFixed(2)} * var(--u))`;
 const at = (x, y, w) => `left:${dp(x / S)};top:${dp(y / S)};width:${dp(w / S)}`;
 const dateText = ms => new Date(ms).toLocaleDateString('pl-PL', { day: 'numeric', month: 'long', year: 'numeric' });
@@ -94,7 +94,7 @@ const themeGlow = (m, top) => themeOf(m) ? `<span class="theme-glow ${themeOf(m)
 const TILE_ART = { crown: 'tile-crown', badge: 'tile-heart', sunset: 'tile-sky', lavender: 'tile-sky', gift: 'tile-gift', bigGift: 'tile-gift' };
 const TILE_FILTER = { bigGift: 'hue-rotate(200deg) saturate(1.2)', lavender: 'hue-rotate(40deg) saturate(.8)' };
 const LABEL = { crown: '<b>Korona<br>dla Puszystka</b>', badge: 'Nowa<br>odznaka', sunset: '<b>Motyw tła</b><br>„Różowy zachód”', gift: 'Niespodzianka' };
-const FX_ART = { hearts: 'home-heart-0', butterflies: 'items/butterfly', stars: 'home-spark-5', confetti: 'home-heart-2', fireworks: 'items/firework' };
+const FX_ART = { hearts: 'home-heart-0', butterflies: 'items/butterfly', stars: 'home-spark-5', confetti: 'home-heart-2', fireworks: 'items/firework', embers: 'home-spark-6' };
 const TILE_BG = { nakrycia: 'linear-gradient(160deg,#fff4dc,#ffe2ef)', ozdoby: 'linear-gradient(160deg,#fff1f7,#f6e6ff)', ubranka: 'linear-gradient(160deg,#eefaf5,#fde8f1)', akcesoria: 'linear-gradient(160deg,#fff5f8,#fde3ef)', efekty: 'linear-gradient(160deg,#f3efff,#fde6f2)', odznaki: 'linear-gradient(160deg,#fff9e8,#fdf0f6)', dekoracje: 'linear-gradient(160deg,#eef6ff,#fdeef4)' };
 // badges are medallions in their rarity's metal (medals.js)
 const badgeArt = (r, cls = '') => medalSVG(r, rarityOf(r), cls);
@@ -143,13 +143,14 @@ let demoOpened = [];
 let demoClaimed = null;
 function demoState() {
   const now = Date.now(), n = params.has('count') ? Math.max(0, +params.get('count') || 0) : 27;
-  const prog = { meetings: n, quizzes: params.has('quizzes') ? +params.get('quizzes') || 0 : 2, care: params.has('care') ? +params.get('care') || 0 : 3 };
+  const st = params.has('streak') ? +params.get('streak') || 0 : 3;
+  const prog = { meetings: n, quizzes: params.has('quizzes') ? +params.get('quizzes') || 0 : 2, care: params.has('care') ? +params.get('care') || 0 : 3, streak: Math.max(st, 5) };
   return {
     you: 1, connected: true, together: true, code: null, count: n,
     members: [{ name: 'Miłosz', slot: 1 }, { name: 'Ola', slot: 2 }],
     firstMetAt: (d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`)(new Date(now - 214 * DEMO_DAY)),
     meetings: [{ id: 'd1', occurred_at: now - 3 * DEMO_DAY - 3600000, source: 'auto' }, { id: 'd2', occurred_at: now - 9 * DEMO_DAY, source: 'manual' }],
-    progress: prog, energy: { value: 72, mood: 'happy', today: 12, streak: 3 },
+    progress: prog, energy: { value: 72, mood: 'happy', today: 12 }, streak: { current: st, best: Math.max(st, 5), today: st > 0 },
     rewards: { room: {}, achieved: {}, unlocked: unlockedIds(prog), claimed: demoClaimed ??= CATALOG.filter(r => claimable(r, prog, demoOpened) && (params.has('outfit') || !['bowLav', 'week'].includes(r.id))).map(r => r.id), equipped: sanitizeOutfit(demoOutfit, prog, demoOpened), opened: demoOpened, version: 1 },
     proximity: { stage: 'recorded', reason: 'recorded', radius: 100, distance: 4, strong: true, since: now - 900000, held: 900000, canConfirm: false, recorded: true, me: { on: true, age: 4000, acc: 12 }, partner: { on: true, age: 7000, acc: 14 } },
     push: { available: false, subscribed: false },
@@ -174,7 +175,8 @@ function model() {
     left: goal - n,
     days: state.firstMetAt ? daysSince(state.firstMetAt) : null,
     outfit: rw.equipped || [], opened: rw.opened || [], claimed: rw.claimed || [],
-    prog: { meetings: n, quizzes: state.progress?.quizzes ?? 0, care: state.progress?.care ?? 0 },
+    prog: { meetings: n, quizzes: state.progress?.quizzes ?? 0, care: state.progress?.care ?? 0, streak: state.progress?.streak ?? 0 },
+    streak: state.streak || { current: 0, best: 0, today: false },
   };
   m.unlocked = CATALOG.filter(r => progOf(r, m) >= r.at && !r.hidden);
   m.energy = state.energy || null;
@@ -188,7 +190,7 @@ function model() {
   m.reached = m.reachedAll ?? m.nodes.filter(v => n >= v).length;
   return m;
 }
-const daysLabel = days => days === null ? 'Ustaw datę' : `${days} ${days === 1 ? 'dzień' : 'dni'}`;
+const daysLabel = days => days === null ? 'Dodaj datę' : `${days} ${days === 1 ? 'dzień' : 'dni'}`;
 const lastLabel = d => d === null ? 'Jeszcze nie' : d === 0 ? 'Dzisiaj' : d === 1 ? 'Wczoraj' : `${d} dni temu`;
 const otherName = () => state?.members?.find(m => m.slot !== state.you)?.name || 'Druga osoba';
 const myName = () => state?.members?.find(m => m.slot === state.you)?.name || 'Ty';
@@ -264,7 +266,7 @@ function viewHome(m) {
     ${m.pin ? `<span class="hero-pin" title="${h(m.pin.name)}">${badgeArt(m.pin)}</span>` : ''}
     <svg class="count" viewBox="0 0 365 92" role="img" aria-label="${m.n}" data-count="${m.n}"><text x="182.5" y="68.5" text-anchor="middle">${m.n}</text></svg>
     <p class="count-label">${plural(m.n, 'spotkanie na żywo', 'spotkania na żywo', 'spotkań na żywo')}</p>
-    <p class="count-sub">${I.heart()}liczone wspólnie</p>
+    ${m.streak.current > 0 ? `<button class="count-sub streak-chip${m.streak.today ? '' : ' pending'}" data-action="streak" aria-label="Seria: ${m.streak.current} ${plural(m.streak.current, 'dzień', 'dni', 'dni')} z rzędu${m.streak.today ? '' : ', spotkajcie się dziś, żeby ją przedłużyć'}"><img class="px-art" src="/img/ui/ic-flame.png" alt=""><b>${m.streak.current}</b> ${plural(m.streak.current, 'dzień', 'dni', 'dni')} z rzędu${m.streak.best > m.streak.current ? `<span class="best">· rekord ${m.streak.best}</span>` : ''}</button>` : `<p class="count-sub">${I.heart()}liczone wspólnie</p>`}
     <div class="panel" data-action="rewards">
       <p class="panel-title">Pasek spotkań</p>
       <p class="ratio"><b>${m.n}</b> / ${m.levelGoal}</p>
@@ -287,6 +289,18 @@ function viewHome(m) {
   ${state?.connected || DEMO ? `<button class="quiz-btn" data-action="quiz" aria-label="Quizy we dwoje${m.quizInvite ? ', masz zaproszenie' : ''}"><img class="px-art" src="/img/ui/ic-quiz.png" alt="">${m.quizInvite || m.quiz?.state === 'playing' ? '<span class="dot">!</span>' : ''}</button>` : ''}
   ${m.energy ? energyMeter(m.energy) : ''}
   <div class="bubble" ${!DEMO && state && !state.connected ? 'data-action="copy"' : ''}>${phrase(m)}</div>`;
+}
+// The streak: days in a row with at least one recorded meeting.
+function streakSheet(m) {
+  const st = m.streak, next = CATALOG.filter(r => r.source === 'streak' && r.at > m.prog.streak).sort((a, b) => a.at - b.at)[0];
+  const days = n => `${n} ${plural(n, 'dzień', 'dni', 'dni')}`;
+  return `<h2>Seria spotkań</h2>
+    <div class="streak-big"><img class="px-art" src="/img/ui/ic-flame.png" alt=""><b>${st.current}</b><span>${plural(st.current, 'dzień', 'dni', 'dni')} z rzędu</span></div>
+    <p>${st.current === 0 ? 'Spotkajcie się, żeby zacząć serię.' : st.today ? 'Dzisiejsze spotkanie już się liczy ♥ Jutro możecie ją przedłużyć.' : 'Spotkajcie się dziś, żeby przedłużyć serię — liczy się do północy.'}</p>
+    <div class="streak-stats"><div><b>${m.n}</b><span>${plural(m.n, 'spotkanie', 'spotkania', 'spotkań')} razem</span></div><div><b>${st.best}</b><span>najdłuższa seria</span></div>${m.days !== null ? `<div><b>${m.days}</b><span>dni od pierwszego spotkania</span></div>` : ''}</div>
+    <ul class="en-rules"><li>Seria to kolejne dni, w których zapisaliście co najmniej jedno spotkanie. Kilka spotkań jednego dnia to jeden dzień serii.</li><li>Dzień bez spotkania przerywa serię, ale zdobyte nagrody zostają.</li><li>Data pierwszego spotkania jest tylko pamiątką i nie liczy się do serii.</li></ul>
+    ${next ? `<p class="note">Następna nagroda za serię: <b>${h(next.name)}</b> — ${days(next.at)} z rzędu.</p>` : '<p class="note">Wszystkie nagrody za serie zdobyte ♥</p>'}
+    <div class="row-btns"><button class="btn-main" data-action="close">Super ${I.heart('', '#fff')}</button></div>`;
 }
 // Puszystek's shared energy: a small pixel meter on the home screen
 const MOOD = { happy: 'pełen energii', calm: 'spokojny', sleepy: 'śpiący', tired: 'zmęczony' };
@@ -1116,7 +1130,7 @@ function renderSheet(quiet = false) {
     <p class="sec-h">Wasza para</p><div class="sec">
       ${row(ic('heart'), 'Para', `${h(myName())} ♡ ${state?.connected ? h(otherName()) : 'czeka na drugą osobę'}`, '')}
       ${row(ic('heart', 'lav'), 'Twoje imię', 'Widzicie je oboje w nagłówku.', `<button class="btn-soft" data-action="name">${h(myName())}</button>`)}
-      ${row(ic('cal', 'lav'), 'Data pierwszego spotkania', 'Od niej liczymy dni razem.', `<button class="btn-soft" data-action="first-date">${h(state?.firstMetAt || 'Ustaw')}</button>`)}
+      ${row(ic('cal', 'lav'), 'Data pierwszego spotkania', 'Pamiątka (opcjonalna). Nie wpływa na nagrody.', `<button class="btn-soft" data-action="first-date">${h(state?.firstMetAt || 'Ustaw')}</button>`)}
       ${state && !state.connected ? `<div class="set">${ic('key', 'gold')}<div><b>Kod zaproszenia</b><small>Druga osoba wybiera „Dołącz z kodem”.</small><div class="code">${h(state.code || '')}</div></div><button class="btn-soft" data-action="copy">Kopiuj</button></div>` : ''}
     </div>
     <p class="sec-h">Spotkania</p><div class="sec">
@@ -1138,8 +1152,10 @@ function renderSheet(quiet = false) {
   }
   else if (sheet === 'history') c = `<h2>Wasze spotkania</h2><p>Ta sama historia na obu telefonach. Pomyłki można usunąć.</p>
     ${state.meetings.length ? state.meetings.map(e => `<div class="hist"><div><b>${dateText(e.occurred_at)}</b><small>${e.source === 'auto' ? 'Wykryte automatycznie' : 'Dodane ręcznie'}</small></div><button data-action="delete" data-id="${h(e.id)}">Usuń</button></div>`).join('') : '<div class="empty">Jeszcze nie zapisaliście żadnego spotkania.</div>'}`;
-  else if (sheet === 'first-date') c = `<h2>Wasz pierwszy dzień</h2><p>Ustawcie datę pierwszego spotkania — oboje zobaczycie ten sam licznik dni.</p>
-    <form id="date-form"><label class="field-l" for="startdate">Data</label><input class="field" id="startdate" required type="date" max="${new Date().toISOString().slice(0, 10)}" value="${h(state?.firstMetAt || '')}"><button type="submit" class="btn-main">Zapisz datę ${I.heart('', '#fff')}</button></form>`;
+  else if (sheet === 'first-date') c = `<h2>Wasz pierwszy dzień</h2><p>Pamiątka: oboje zobaczycie, od ilu dni się znacie. To opcjonalne i nie wpływa na liczbę spotkań, serię dni, energię Puszystka ani nagrody — te liczą się tylko ze spotkań zapisanych w aplikacji.</p>
+    <form id="date-form"><label class="field-l" for="startdate">Data pierwszego spotkania</label><input class="field" id="startdate" required type="date" max="${new Date().toISOString().slice(0, 10)}" value="${h(state?.firstMetAt || '')}"><button type="submit" class="btn-main">Zapisz datę ${I.heart('', '#fff')}</button></form>
+    ${state?.firstMetAt ? '<button class="btn-ghost wide" data-action="first-date-clear">Usuń datę</button>' : ''}`;
+  else if (sheet === 'streak') c = streakSheet(m);
   else if (sheet === 'meeting') c = `<h2>Zapisać spotkanie?</h2><p>Licznik jest wspólny — druga osoba od razu zobaczy nowe spotkanie.</p>
     <form id="meeting-form"><label class="field-l" for="mdate">Kiedy?</label><input class="field" id="mdate" type="date" max="${new Date().toISOString().slice(0, 10)}" value="${new Date().toISOString().slice(0, 10)}"><button type="submit" class="btn-main">Zapisz spotkanie ${I.heart('', '#fff')}</button></form>`;
   else if (sheet === 'location-info') c = `<h2>Auto-zliczanie</h2><p>Gdy oboje włączycie lokalizację i macie otwarte Razem, telefony co kilkanaście sekund porównują swoje pozycje. Do 300 m: „jesteście niedaleko”. Do 50 m przy dokładnym GPS: jesteście razem, a po minucie spotkanie zapisuje się samo. Przy słabszym GPS (do ${m?.pr.radius || 100} m) potwierdzacie je oboje.</p>
@@ -1255,6 +1271,8 @@ async function act(action, el) {
     }
     else if (action === 'house-back') go('home');
     else if (action === 'energy') openSheet('energy');
+    else if (action === 'streak') openSheet('streak');
+    else if (action === 'first-date-clear') { if (DEMO) return toast('To tylko podgląd'); state = await request('/api/first-date', { date: null }); saveState(); closeSheet(); render(route); toast('Data usunięta'); }
     else if (action === 'energy-rest') { if (DEMO) return toast('To tylko podgląd'); state = await request('/api/energy-rest', { on: !state.energy?.rest }); saveState(); renderSheet(true); render(route); toast(state.energy?.rest ? 'Puszystek odpoczywa — energia nie spada ♡' : 'Koniec odpoczynku ♡'); }
     else if (action === 'quiz') go('quiz');
     else if (action === 'quiz-back') { quizResult = false; go('home'); }

@@ -99,6 +99,12 @@ export const REWARDS = [
   { id: 'bunnyEars', at: 16, cat: 'nakrycia', slot: 'head', name: 'Uszy króliczka', desc: 'Puszyste uszka na opasce. Puszystek udaje króliczka.' },
   { id: 'chefHat', at: 23, cat: 'nakrycia', slot: 'head', name: 'Czapka kucharza', desc: 'Do wspólnego gotowania w kuchni Puszystka.', set: 'kuchnia' },
   { id: 'sunglasses', source: 'care', at: 7, cat: 'akcesoria', slot: 'face', name: 'Okulary przeciwsłoneczne', desc: 'Siedem dni, w których Puszystek miał dużo energii.', set: 'ogrod' },
+  // streak: days in a row with a meeting (separate from the total count)
+  { id: 'streak3', source: 'streak', at: 3, cat: 'odznaki', slot: 'pin', name: 'Trzy dni z rzędu', desc: 'Spotkaliście się trzy dni pod rząd.' },
+  { id: 'embers', source: 'streak', at: 14, cat: 'efekty', slot: 'effect', name: 'Iskierki serc', desc: 'Dwa tygodnie spotkań dzień po dniu — wokół Puszystka tańczą ciepłe iskierki.' },
+  { id: 'streak30', source: 'streak', at: 30, cat: 'odznaki', slot: 'pin', name: 'Miesiąc dzień po dniu', desc: 'Trzydzieści dni z rzędu ze spotkaniem.', special: true },
+  { id: 'flameClip', source: 'streak', at: 60, cat: 'ozdoby', slot: 'ear', name: 'Spinka-płomyczek', desc: 'Sześćdziesiąt dni z rzędu. Ten płomyk nie gaśnie.', special: true },
+  { id: 'streak100', source: 'streak', at: 100, cat: 'odznaki', slot: 'pin', name: 'Sto dni z rzędu', desc: 'Sto dni pod rząd ze spotkaniem. Niesamowite.', special: true },
   { id: 'starWand', source: 'quiz', at: 10, cat: 'akcesoria', slot: 'held', name: 'Gwiezdna różdżka', desc: 'Dziesięć quizów — magia zgranej pary.', special: true },
   // Domek Puszystka: furniture and decorations for the shared room
   { id: 'garland', at: 1, cat: 'domek', hcat: 'dekoracje', slot: 'hWall', name: 'Girlanda serduszek', desc: 'Pierwsza dekoracja domku: kolorowe serduszka nad łóżeczkiem.' },
@@ -122,6 +128,7 @@ export const REWARDS = [
   // sypialnia, more
   { id: 'plushBear', at: 2, cat: 'domek', hcat: 'dekoracje', name: 'Pluszowy miś', desc: 'Miś do przytulania przed snem.', set: 'sen' },
   { id: 'nightLamp', at: 19, cat: 'domek', hcat: 'swiatlo', name: 'Lampka nocna', desc: 'Mała lampka na stolik — świeci jak księżyc.', set: 'sen' },
+  { id: 'heartCalendar', source: 'streak', at: 7, cat: 'domek', hcat: 'dekoracje', name: 'Kalendarz serc', desc: 'Tydzień spotkań dzień po dniu — każdy dzień ma swoje serduszko.', set: 'sen' },
   { id: 'wardrobe', at: 39, cat: 'domek', hcat: 'meble', name: 'Szafa na ubranka', desc: 'Tu Puszystek trzyma korony, szaliki i kokardki.' },
   // salon
   { id: 'wallClock', at: 2, cat: 'domek', hcat: 'dekoracje', name: 'Zegar ścienny', desc: 'Odmierza czas do następnego spotkania.', set: 'kominek' },
@@ -137,6 +144,7 @@ export const REWARDS = [
   { id: 'paintingFlowers', source: 'quiz', at: 3, cat: 'domek', hcat: 'dekoracje', name: 'Obraz z kwiatami', desc: 'Bukiet za trzy wspólne quizy.' },
   { id: 'rugSalon', at: 32, cat: 'domek', hcat: 'sciany', name: 'Owalny dywan', desc: 'Miękki dywan w trzech odcieniach różu.', set: 'kominek' },
   { id: 'catTree', at: 38, cat: 'domek', hcat: 'meble', name: 'Drapak-wieża', desc: 'Puszystek wspina się na sam szczyt.' },
+  { id: 'flameTrophy', source: 'streak', at: 30, cat: 'domek', hcat: 'specjalne', name: 'Puchar płomyka', desc: 'Trzydzieści dni z rzędu ze spotkaniem — puchar na honorowe miejsce.', special: true },
   { id: 'fireplace', at: 60, cat: 'domek', hcat: 'swiatlo', name: 'Kominek', desc: 'Wyjątkowy mebel: trzaskający ogień na chłodne wieczory.', special: true, set: 'kominek' },
   { id: 'wallPeach', at: 70, cat: 'domek', hcat: 'sciany', slot: 'hPaperSalon', name: 'Brzoskwiniowy salon', desc: 'Ciepłe, brzoskwiniowe ściany z różową boazerią.' },
   // kuchnia
@@ -185,7 +193,7 @@ export const BY_ID = Object.fromEntries(REWARDS.map(r => [r.id, r]));
 // Achievements are moments of shared progress ("10 wspólnych spotkań"); each
 // one grants one or more rewards (for Puszystek and/or the house). A reward
 // belongs to the achievement of its source and threshold.
-const ACH_NAMES = { 'quiz-1': 'Pierwszy wspólny quiz', 'quiz-2': 'Dwa quizy', 'quiz-3': 'Trzy quizy', 'quiz-5': 'Pięć quizów', 'quiz-10': 'Dziesięć quizów', 'care-3': 'Trzy dni pełne energii', 'care-7': 'Tydzień pełen energii', 1: 'Pierwsze spotkanie', 3: 'Trzecia randka', 5: 'Piątka razem', 7: 'Pierwszy tydzień', 10: 'Dziesięć spotkań', 20: 'Dwadzieścia spotkań', 25: 'Ćwierć setki', 30: 'Trzydzieści spotkań', 50: 'Pięćdziesiątka', 75: 'Siedemdziesiąt pięć', 100: 'Setka razem', 150: 'Sto pięćdziesiąt', 200: 'Legenda Razem' };
+const ACH_NAMES = { 'streak-3': 'Trzy dni z rzędu', 'streak-7': 'Tydzień dzień po dniu', 'streak-14': 'Dwa tygodnie z rzędu', 'streak-30': 'Miesiąc z rzędu', 'streak-60': 'Sześćdziesiąt dni z rzędu', 'streak-100': 'Sto dni z rzędu', 'quiz-1': 'Pierwszy wspólny quiz', 'quiz-2': 'Dwa quizy', 'quiz-3': 'Trzy quizy', 'quiz-5': 'Pięć quizów', 'quiz-10': 'Dziesięć quizów', 'care-3': 'Trzy dni pełne energii', 'care-7': 'Tydzień pełen energii', 1: 'Pierwsze spotkanie', 3: 'Trzecia randka', 5: 'Piątka razem', 7: 'Pierwszy tydzień', 10: 'Dziesięć spotkań', 20: 'Dwadzieścia spotkań', 25: 'Ćwierć setki', 30: 'Trzydzieści spotkań', 50: 'Pięćdziesiątka', 75: 'Siedemdziesiąt pięć', 100: 'Setka razem', 150: 'Sto pięćdziesiąt', 200: 'Legenda Razem' };
 const few = n => n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 12 || n % 100 > 14);
 export const achievementOf = r => `${r.source || 'meetings'}-${r.at}`;
 export const ACHIEVEMENTS = [...new Map(REWARDS.filter(r => !r.hidden).map(r => [achievementOf(r), r])).values()]
@@ -198,8 +206,10 @@ export const isSpecial = r => !!r && (r.special || MILESTONES.includes(r.at));
 // Where a reward is earned. Today only shared meetings count; future sources
 // (streaks of days, anniversaries, couple quizzes, challenges, events) plug in
 // here with their own progress value, e.g. { id, source: 'quiz', at: 3 }.
-export const SOURCES = { meetings: (r, p) => (p.meetings ?? 0) >= r.at, quiz: (r, p) => (p.quizzes ?? 0) >= r.at, care: (r, p) => (p.care ?? 0) >= r.at };
-export const SOURCE_UNIT = { meetings: ['spotkanie', 'spotkania', 'spotkań'], quiz: ['quiz', 'quizy', 'quizów'], care: ['dzień pełen energii', 'dni pełne energii', 'dni pełnych energii'] };
+// `streak` is the longest run of days in a row with a meeting the pair has
+// ever reached, so a broken streak never takes a reward back.
+export const SOURCES = { meetings: (r, p) => (p.meetings ?? 0) >= r.at, quiz: (r, p) => (p.quizzes ?? 0) >= r.at, care: (r, p) => (p.care ?? 0) >= r.at, streak: (r, p) => (p.streak ?? 0) >= r.at };
+export const SOURCE_UNIT = { meetings: ['spotkanie', 'spotkania', 'spotkań'], quiz: ['quiz', 'quizy', 'quizów'], care: ['dzień pełen energii', 'dni pełne energii', 'dni pełnych energii'], streak: ['dzień z rzędu', 'dni z rzędu', 'dni z rzędu'] };
 // themed sets: a set is complete when every thing in it is in the inventory
 export const SETS = {
   kominek: { name: 'Wieczór przy kominku', room: 'salon' },

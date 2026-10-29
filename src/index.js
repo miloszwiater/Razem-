@@ -2,6 +2,7 @@ import { BY_ID, unlockedIds, sanitizeOutfit, claimable, earned, ACHIEVEMENTS, is
 import { ITEMS as ROOM_ITEMS, arrange, check as checkPlacement, movable, roomOpen, applyMove } from '../public/room.js';
 import { RULES, RADII, verdict, transition, haversine } from './proximity.js';
 import { pushReady, sendPush } from './push.js';
+import { streakOf } from '../public/streak.js';
 import { MODES as QUIZ_MODES, MAX_OPEN, pick as pickQuestions, aboutSlot, score as quizScore, validQuestion } from '../public/quiz-bank.js';
 
 const bad=(message,status=400)=>Response.json({error:message},{status,headers:{'Cache-Control':'no-store'}});
@@ -31,7 +32,7 @@ async function ensureSchema(env){
  await addColumns('pair_prefs',[['claimed',"TEXT NOT NULL DEFAULT '[]'"],['version','INTEGER NOT NULL DEFAULT 0'],['last_change','TEXT'],['room',"TEXT NOT NULL DEFAULT '{}'"],['achieved',"TEXT NOT NULL DEFAULT '{}'"]]);
  await addColumns('members',[['geo_on','INTEGER NOT NULL DEFAULT 0'],['ping_at','INTEGER'],['map_on','INTEGER NOT NULL DEFAULT 0']]);
  await addColumns('pairs',[['confirm1_at','INTEGER'],['confirm2_at','INTEGER'],['notified_near_at','INTEGER'],['tz','TEXT']]);
- await addColumns('pair_prefs',[['energy_rest','INTEGER NOT NULL DEFAULT 0'],['energy_since','TEXT']]);
+ await addColumns('pair_prefs',[['energy_rest','INTEGER NOT NULL DEFAULT 0'],['energy_since','TEXT'],['streak_best','INTEGER NOT NULL DEFAULT 0']]);
  await addColumns('meetings',[['session_key','TEXT']]);
  await env.DB.batch([
   env.DB.prepare('CREATE TABLE IF NOT EXISTS member_tokens (token_hash TEXT PRIMARY KEY, member_id TEXT NOT NULL REFERENCES members(id), created_at INTEGER NOT NULL)'),
@@ -62,6 +63,9 @@ const addEnergy=(env,pairId,key,delta,kind,day,at)=>env.DB.prepare('INSERT OR IG
 async function energyEvent(env,pairId,kind,when=Date.now()){
  const day=dayOf(when,await pairTz(env,pairId));
  if(kind==='meeting'){
+  // a meeting entered for a past day (before energy started) changes nothing
+  const since=(await env.DB.prepare('SELECT energy_since FROM pair_prefs WHERE pair_id=?').bind(pairId).first())?.energy_since||dayOf(Date.now(),await pairTz(env,pairId));
+  if(day<since)return;
   const n=(await env.DB.prepare("SELECT COUNT(*) AS n FROM energy_events WHERE pair_id=? AND day=? AND kind='meeting'").bind(pairId,day).first()).n;
   if(n>ENERGY.MEET_EXTRA)return;
   await addEnergy(env,pairId,`meeting:${day}:${n+1}`,n?ENERGY.MEET_MORE:ENERGY.MEET_FIRST,'meeting',day,when).run();
@@ -151,9 +155,22 @@ async function prefs(env,pairId){
 // change, so two phones changing different slots at the same moment both win.
 // The pair's progress in every reward currency: meetings, finished quizzes and
 // days full of energy (see quizzes / energy below).
+// Everything here counts recorded meetings only; the date the pair first met is
+// a keepsake and never feeds progress, streaks, energy or rewards.
 async function progressOf(env,pairId){
- const [n,q,c]=await Promise.all([countOf(env,pairId),quizCount(env,pairId),careDays(env,pairId)]);
- return {meetings:n,quizzes:q,care:c};
+ const [n,q,c,st]=await Promise.all([countOf(env,pairId),quizCount(env,pairId),careDays(env,pairId),streakView(env,pairId)]);
+ return {meetings:n,quizzes:q,care:c,streak:st.best};
+}
+// Days in a row with a recorded meeting, in the pair's time zone. The best run
+// ever is kept (pair_prefs.streak_best only grows), so rewards for a streak
+// stay even after the streak breaks or a meeting is deleted.
+async function streakView(env,pairId){
+ const tz=await pairTz(env,pairId);
+ const times=((await env.DB.prepare('SELECT occurred_at FROM meetings WHERE pair_id=?').bind(pairId).all()).results||[]).map(r=>r.occurred_at);
+ const st=streakOf(times,tz,dayOf(Date.now(),tz));
+ const kept=(await env.DB.prepare('SELECT streak_best FROM pair_prefs WHERE pair_id=?').bind(pairId).first())?.streak_best||0;
+ if(st.best>kept)await env.DB.prepare('UPDATE pair_prefs SET streak_best=? WHERE pair_id=? AND streak_best<?').bind(st.best,pairId,st.best).run();
+ return {...st,best:Math.max(st.best,kept)};
 }
 const slotOfItem=id=>BY_ID[id]?.slot||ROOM_ITEMS[id]?.basic||null;
 async function mutate(env,pairId,fn){
@@ -170,7 +187,7 @@ async function mutate(env,pairId,fn){
 async function syncRewards(env,pairId){
  const p=await prefs(env,pairId),prog=await progressOf(env,pairId),n=prog.meetings;
  // remember when each achievement was reached (0 = a meeting milestone from before this was recorded)
- const have=a=>a.source==='quiz'?prog.quizzes:a.source==='care'?prog.care:n;
+ const have=a=>a.source==='quiz'?prog.quizzes:a.source==='care'?prog.care:a.source==='streak'?prog.streak:n;
  const reached=ACHIEVEMENTS.filter(a=>have(a)>=a.at&&!(a.id in p.achieved));
  if(reached.length){const ach={...p.achieved};for(const a of reached)ach[a.id]=a.source!=='meetings'||(n>p.seenCount&&a.at>p.seenCount)?Date.now():0;await env.DB.prepare('UPDATE pair_prefs SET achieved=? WHERE pair_id=?').bind(JSON.stringify(ach),pairId).run()}
  const outfit=sanitizeOutfit(p.equipped,prog,p.opened);
@@ -276,7 +293,7 @@ async function state(env,m){
  const p=await prefs(env,m.pair_id);
  const subs=(await env.DB.prepare('SELECT COUNT(*) AS n FROM push_subs WHERE member_id=?').bind(m.id).first()).n;
  return {you:m.slot,members:rows.map(x=>({name:x.display_name,slot:x.slot,locationActive:!!x.geo_on&&Number(x.location_at||0)>Date.now()-RULES.FRESH})),code:rows.length<2?pair.invite_code:null,firstMetAt:pair.first_met_at,createdAt:pair.created_at,count:n,meetings:meets.results||[],together:v.stage==='together'||v.stage==='recorded',connected:rows.length===2,
-  progress:prog,energy,quiz:await quizSummary(env,m),
+  progress:prog,energy,quiz:await quizSummary(env,m),streak:await streakView(env,m.pair_id),
   rewards:{unlocked:unlockedIds(prog),claimed:p.claimed.filter(x=>claimable(BY_ID[x],prog,p.opened)),equipped:sanitizeOutfit(p.equipped,prog,p.opened,p.claimed),opened:p.opened,version:p.version,lastChange:p.lastChange,room:p.room,achieved:p.achieved},
   proximity:proximityOut(v,me),push:{available:pushReady(env),key:env.VAPID_PUBLIC||null,subscribed:subs>0}};
 }
@@ -312,7 +329,9 @@ async function api(req,env,path,ctx){
  const tz=req.headers.get('X-Razem-TZ');if(tz&&tz!==m.tz&&validTz(tz))await env.DB.prepare('UPDATE pairs SET tz=? WHERE id=?').bind(tz,m.pair_id).run();
  if(method==='GET'&&path==='/api/state')return ok(await state(env,m));
  if(method==='POST'&&path==='/api/first-date'){
-  const b=await body(req),date=b?.date;
+  // the date the pair first met: an optional keepsake (null clears it)
+  const b=await body(req),date=b?.date===null||b?.date===''?null:b?.date;
+  if(date===null){await env.DB.prepare('UPDATE pairs SET first_met_at=NULL WHERE id=?').bind(m.pair_id).run();return ok(await state(env,m))}
   if(typeof date!=='string'||!/^(19|20)\d{2}-\d{2}-\d{2}$/.test(date)||Number.isNaN(Date.parse(date))||Date.parse(date)>Date.now()+86400000)return bad('Wybierz prawidłową datę.');
   await env.DB.prepare('UPDATE pairs SET first_met_at=? WHERE id=?').bind(date,m.pair_id).run();return ok(await state(env,m));
  }

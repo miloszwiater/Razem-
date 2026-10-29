@@ -166,6 +166,20 @@ img { display: block; user-select: none; -webkit-user-drag: none; }
 .count-label { position: absolute; left: 0; right: 0; top: calc(104 * var(--u)); margin: 0; text-align: center; font-size: calc(18.9 * var(--u)); line-height: calc(26 * var(--u)); font-weight: 700; color: #2c1d3c; }
 .count-sub { position: absolute; left: 0; right: 0; top: calc(132.5 * var(--u)); margin: 0; display: flex; justify-content: center; align-items: center; gap: calc(7.2 * var(--u)); font-size: calc(10.9 * var(--u)); line-height: calc(18 * var(--u)); color: #74688c; }
 .count-sub svg { width: calc(11.6 * var(--u)); height: calc(10 * var(--u)); }
+.streak-chip { left: 50%; right: auto; translate: -50% 0; width: max-content; padding: 0 calc(10 * var(--u)) 0 calc(6 * var(--u)); height: calc(20 * var(--u)); top: calc(131.5 * var(--u)); border-radius: calc(99 * var(--u)); background: rgba(255, 244, 228, .9); box-shadow: inset 0 0 0 calc(1 * var(--u)) #ffe0b5; color: #8a4a1e; gap: calc(4 * var(--u)); font-size: calc(10.6 * var(--u)); font-weight: 600; }
+.streak-chip img { width: calc(12 * var(--u)); height: auto; }
+.streak-chip b { font-weight: 800; font-size: calc(11.5 * var(--u)); }
+.streak-chip .best { margin-left: calc(2 * var(--u)); color: #b07a5a; font-weight: 500; }
+.streak-chip.pending { background: rgba(255, 255, 255, .85); box-shadow: inset 0 0 0 calc(1 * var(--u)) #f1dfea; color: #8a6a7e; }
+.streak-chip.pending img { filter: saturate(.55); animation: float-y 2.4s ease-in-out infinite; }
+.streak-big { display: flex; align-items: center; justify-content: center; gap: 8px; margin: 4px 0 6px; color: #8a4a1e; }
+.streak-big img { width: 34px; image-rendering: pixelated; }
+.streak-big b { font-size: 40px; line-height: 1; }
+.streak-big span { font-size: 15px; font-weight: 700; }
+.streak-stats { display: flex; gap: 8px; margin: 8px 0; }
+.streak-stats div { flex: 1; display: grid; justify-items: center; padding: 8px 4px; border-radius: 14px; background: #fbf4f8; text-align: center; }
+.streak-stats b { font-size: 20px; color: var(--plum); }
+.streak-stats span { font-size: 11px; color: #8a7da3; }
 
 .panel {
   position: absolute; left: 0; right: 0; top: calc(165 * var(--u)); bottom: 0;

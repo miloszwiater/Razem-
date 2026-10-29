@@ -34,6 +34,7 @@ export const WEAR = {
   bunnyEars: { src: 'items/bunny-ears.png', w: 96, on: 'head', edge: 'bottom', dy: 14, px: 1 },
   sunglasses: { src: 'items/sunglasses.png', w: 128, on: 'face', edge: 'center', dy: 0, px: 1 },
   bowtie: { src: 'items/bowtie.png', w: 50, on: 'neck', edge: 'top', dy: -4, px: 1 },
+  flameClip: { src: 'items/flame-clip.png', w: 40, on: 'ear', edge: 'center', dy: 0, px: 1 },
   daisy: { src: 'items/daisy.png', w: 38, on: 'ear', edge: 'center', dy: 0, px: 1 },
   starWand: { src: 'items/star-wand.png', w: 40, on: 'held', edge: 'center', dx: 74, dy: -30, px: 1 },
   heartBalloon: { src: 'items/heart-balloon.png', w: 46, on: 'held', edge: 'center', dx: 104, dy: -74, px: 1 },
@@ -54,6 +55,7 @@ const FX = {
   stars: ['home-spark-5', 'home-spark-4', 'home-spark-8'],
   confetti: ['home-heart-2', 'items/butterfly', 'home-spark-6'],
   fireworks: ['items/firework', 'home-spark-5'],
+  embers: ['home-spark-6', 'home-heart-2', 'home-spark-5'],
 };
 
 const pct = (v, t) => `${(v / t * 100).toFixed(2)}%`;

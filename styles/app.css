@@ -166,6 +166,20 @@ img { display: block; user-select: none; -webkit-user-drag: none; }
 .count-label { position: absolute; left: 0; right: 0; top: 104dp; margin: 0; text-align: center; font-size: 18.9dp; line-height: 26dp; font-weight: 700; color: #2c1d3c; }
 .count-sub { position: absolute; left: 0; right: 0; top: 132.5dp; margin: 0; display: flex; justify-content: center; align-items: center; gap: 7.2dp; font-size: 10.9dp; line-height: 18dp; color: #74688c; }
 .count-sub svg { width: 11.6dp; height: 10dp; }
+.streak-chip { left: 50%; right: auto; translate: -50% 0; width: max-content; padding: 0 10dp 0 6dp; height: 20dp; top: 131.5dp; border-radius: 99dp; background: rgba(255, 244, 228, .9); box-shadow: inset 0 0 0 1dp #ffe0b5; color: #8a4a1e; gap: 4dp; font-size: 10.6dp; font-weight: 600; }
+.streak-chip img { width: 12dp; height: auto; }
+.streak-chip b { font-weight: 800; font-size: 11.5dp; }
+.streak-chip .best { margin-left: 2dp; color: #b07a5a; font-weight: 500; }
+.streak-chip.pending { background: rgba(255, 255, 255, .85); box-shadow: inset 0 0 0 1dp #f1dfea; color: #8a6a7e; }
+.streak-chip.pending img { filter: saturate(.55); animation: float-y 2.4s ease-in-out infinite; }
+.streak-big { display: flex; align-items: center; justify-content: center; gap: 8px; margin: 4px 0 6px; color: #8a4a1e; }
+.streak-big img { width: 34px; image-rendering: pixelated; }
+.streak-big b { font-size: 40px; line-height: 1; }
+.streak-big span { font-size: 15px; font-weight: 700; }
+.streak-stats { display: flex; gap: 8px; margin: 8px 0; }
+.streak-stats div { flex: 1; display: grid; justify-items: center; padding: 8px 4px; border-radius: 14px; background: #fbf4f8; text-align: center; }
+.streak-stats b { font-size: 20px; color: var(--plum); }
+.streak-stats span { font-size: 11px; color: #8a7da3; }
 
 .panel {
   position: absolute; left: 0; right: 0; top: 165dp; bottom: 0;
