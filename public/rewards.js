@@ -35,6 +35,16 @@ export const TIERS = [
   { min: 100, name: 'Diamentowy' },
 ];
 export const tierOf = at => TIERS.filter(t => at >= t.min).at(-1).name;
+// Rarity: how a reward is presented (frame, metal, glow). Presentation only;
+// unlocking still depends on `at` alone.
+export const RARITY = {
+  zwykla: 'Zwykła',
+  brazowa: 'Brązowa',
+  srebrna: 'Srebrna',
+  zlota: 'Złota',
+  wyjatkowa: 'Wyjątkowa',
+};
+export const rarityOf = r => r.special ? 'wyjatkowa' : r.at >= 50 ? 'zlota' : r.at >= 20 ? 'srebrna' : r.at >= 8 ? 'brazowa' : 'zwykla';
 
 export const REWARDS = [
   { id: 'first', at: 1, cat: 'odznaki', slot: 'pin', name: 'Pierwsze spotkanie', desc: 'Odznaka za wasze pierwsze wspólnie zaliczone spotkanie.' },
@@ -55,7 +65,7 @@ export const REWARDS = [
   { id: 'badge', at: 30, cat: 'odznaki', slot: 'pin', name: 'Nowa odznaka', desc: 'Serduszkowa odznaka za 30 wspólnych spotkań.' },
   { id: 'garden', at: 33, cat: 'dekoracje', slot: 'decor', name: 'Kwiatowy ogródek', desc: 'Grządka kwiatków wokół łapek Puszystka.' },
   { id: 'stars', at: 35, cat: 'efekty', slot: 'effect', name: 'Gwiazdki', desc: 'Migoczące gwiazdki wokół Puszystka.' },
-  { id: 'sunset', at: 40, cat: 'dekoracje', slot: 'theme', name: 'Motyw tła „Różowy zachód”', desc: 'Łąka skąpana w różowym świetle zachodu.' },
+  { id: 'sunset', at: 40, cat: 'dekoracje', slot: 'theme', name: 'Różowy zachód', desc: 'Motyw tła: łąka skąpana w różowym świetle zachodu.' },
   { id: 'scarfMint', at: 42, cat: 'ubranka', slot: 'neck', name: 'Miętowy szalik', desc: 'Szalik w miętowo-błękitne paski na wiosenne dni.' },
   { id: 'wings', at: 45, cat: 'akcesoria', slot: 'back', name: 'Skrzydełka aniołka', desc: 'Małe białe skrzydełka, które delikatnie trzepoczą.' },
   { id: 'gift', at: 50, cat: 'efekty', name: 'Niespodzianka', desc: 'Prezent na 50 spotkań. Co jest w środku?', reveals: 'confetti', special: true },
@@ -65,7 +75,7 @@ export const REWARDS = [
   { id: 'lanterns', at: 65, cat: 'dekoracje', slot: 'decor', name: 'Girlanda lampionów', desc: 'Ciepłe światełka rozwieszone nad łąką.' },
   { id: 'seventy5', at: 75, cat: 'odznaki', slot: 'pin', name: '75 spotkań', desc: 'Trzy ćwierćwiecza wspólnych chwil.' },
   { id: 'medal', at: 80, cat: 'odznaki', slot: 'neck', name: 'Złoty medal', desc: 'Trofeum do noszenia — medal za wytrwałość w byciu razem.', special: true },
-  { id: 'lavender', at: 90, cat: 'dekoracje', slot: 'theme', name: 'Motyw „Lawendowy poranek”', desc: 'Łąka w chłodnym, lawendowym świetle poranka.' },
+  { id: 'lavender', at: 90, cat: 'dekoracje', slot: 'theme', name: 'Lawendowy poranek', desc: 'Motyw tła: łąka w chłodnym, lawendowym świetle poranka.' },
   { id: 'diamond', at: 100, cat: 'nakrycia', slot: 'head', name: 'Diamentowa korona', desc: 'Korona na setne spotkanie. Lśni jak wasze wspomnienia.', special: true },
   { id: 'hundred', at: 100, cat: 'odznaki', slot: 'pin', name: 'Setka', desc: 'Sto spotkań. Legenda.', special: true },
   { id: 'rainbow', at: 125, cat: 'akcesoria', slot: 'back', name: 'Tęczowe skrzydła', desc: 'Skrzydła mieniące się kolorami tęczy.', special: true },

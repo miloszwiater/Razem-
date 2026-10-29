@@ -204,7 +204,8 @@ async function api(req,env,path){
    if(p.claimed.includes(r.id))return null;
    const claimed=[...p.claimed,r.id],opened=[...p.opened];
    if(r.reveals){opened.push(r.id);claimed.push(r.reveals)}
-   const free=!!r.slot&&!p.equipped.some(x=>BY_ID[x]?.slot===r.slot);
+   // a free slot is filled right away; badges go to the trophy case (pinning is a separate choice)
+   const free=!!r.slot&&r.slot!=='pin'&&!p.equipped.some(x=>BY_ID[x]?.slot===r.slot);
    return {claimed,opened,equipped:free?[...p.equipped,r.id]:p.equipped,change:{op:'claim',id:r.id,worn:free,by:m.slot,at:Date.now()}};
   });
   return err||ok(await state(env,m));
