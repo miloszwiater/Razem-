@@ -4,6 +4,7 @@
   "main":"src/index.js",
   "compatibility_date":"2026-10-27",
   "workers_dev":true,
+  "vars":{"VAPID_PUBLIC":"BLXZ3qn93WaclIun4e7rHgdnppa9vWGh4CzMRsaJBtStpbqo5dhxo_MKvNv0t0g1H8nz6KVPj7JPUnxyOtpl5nk"},
   "assets":{"directory":"./public","binding":"ASSETS","run_worker_first":true},
   "d1_databases":[{"binding":"DB","database_name":"razem-dwoje-data","database_id":"d96ac17a-1cfb-46a8-b4a3-e12fe746e3e2"}]
 }
