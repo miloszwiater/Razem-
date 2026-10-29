@@ -1,4 +1,6 @@
 import { BY_ID, unlockedIds, sanitizeOutfit, claimable } from '../public/rewards.js';
+import { RULES, RADII, verdict, transition, haversine } from './proximity.js';
+import { pushReady, sendPush } from './push.js';
 
 const bad=(message,status=400)=>Response.json({error:message},{status,headers:{'Cache-Control':'no-store'}});
 const ok=(data,status=200)=>Response.json(data,{status,headers:{'Cache-Control':'no-store'}});
@@ -9,33 +11,27 @@ const code=()=>Array.from(crypto.getRandomValues(new Uint8Array(8)),n=>alphabet[
 async function sha(s){const h=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(s));return Array.from(new Uint8Array(h),b=>b.toString(16).padStart(2,'0')).join('')}
 const norm=s=>typeof s==='string'?s.trim().slice(0,28):'';
 const body=async req=>{try{return await req.json()}catch{return null}};
-const distance=(a,b,c,d)=>{const R=6371000;const r=x=>x*Math.PI/180;const t=r(c-a),u=r(d-b);const z=Math.sin(t/2)**2+Math.cos(r(a))*Math.cos(r(c))*Math.sin(u/2)**2;return 2*R*Math.atan2(Math.sqrt(z),Math.sqrt(1-z))};
 const parse=(s,d)=>{try{const v=JSON.parse(s);return Array.isArray(v)?v:d}catch{return d}};
 
-// Proximity rules. A position is usable for 3 minutes; its reported accuracy
-// must not be worse than the chosen radius (capped at 150 m). Being "near"
-// starts a session; it has to hold for MIN_CONFIRM before the pair may confirm
-// a meeting and for MIN_AUTO before one is recorded automatically. A session
-// counts once; it ends only after the pair has been clearly apart (radius +
-// 200 m hysteresis) for 30 minutes.
-const RADII=[100,150,300,500];
-const FRESH=180000, MIN_CONFIRM=60000, MIN_AUTO=10*60000, APART_RESET=30*60000;
-const maxAccuracy=radius=>Math.min(150,Math.max(50,radius));
-
-// Incremental, backwards compatible migrations: they only add tables and
-// columns (see migrations/0002_rewards.sql, 0003_inventory.sql). Nothing is dropped.
+// Incremental, backwards compatible migrations: they only add tables, columns
+// and indexes (migrations/0002..0004). Nothing is dropped or rewritten.
 let schemaReady=false;
 async function ensureSchema(env){
  if(schemaReady)return;
  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS pair_prefs (pair_id TEXT PRIMARY KEY REFERENCES pairs(id), radius INTEGER NOT NULL DEFAULT 150, equipped TEXT NOT NULL DEFAULT '[]', opened TEXT NOT NULL DEFAULT '[]', seen_count INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0)`).run();
- const cols=new Set(((await env.DB.prepare('PRAGMA table_info(pair_prefs)').all()).results||[]).map(c=>c.name));
- for(const [c,def] of [['claimed',"TEXT NOT NULL DEFAULT '[]'"],['version','INTEGER NOT NULL DEFAULT 0'],['last_change','TEXT']]){
-  if(cols.has(c))continue;
-  try{await env.DB.prepare(`ALTER TABLE pair_prefs ADD COLUMN ${c} ${def}`).run()}catch(e){if(!/duplicate column/i.test(String(e?.message)))throw e}
- }
+ const addColumns=async(table,list)=>{
+  const cols=new Set(((await env.DB.prepare(`PRAGMA table_info(${table})`).all()).results||[]).map(c=>c.name));
+  for(const [c,def] of list){if(cols.has(c))continue;try{await env.DB.prepare(`ALTER TABLE ${table} ADD COLUMN ${c} ${def}`).run()}catch(e){if(!/duplicate column/i.test(String(e?.message)))throw e}}
+ };
+ await addColumns('pair_prefs',[['claimed',"TEXT NOT NULL DEFAULT '[]'"],['version','INTEGER NOT NULL DEFAULT 0'],['last_change','TEXT']]);
+ await addColumns('members',[['geo_on','INTEGER NOT NULL DEFAULT 0'],['ping_at','INTEGER']]);
+ await addColumns('pairs',[['confirm1_at','INTEGER'],['confirm2_at','INTEGER'],['notified_near_at','INTEGER']]);
+ await addColumns('meetings',[['session_key','TEXT']]);
  await env.DB.batch([
   env.DB.prepare('CREATE TABLE IF NOT EXISTS member_tokens (token_hash TEXT PRIMARY KEY, member_id TEXT NOT NULL REFERENCES members(id), created_at INTEGER NOT NULL)'),
   env.DB.prepare('CREATE TABLE IF NOT EXISTS member_recovery (member_id TEXT PRIMARY KEY REFERENCES members(id), code_hash TEXT NOT NULL UNIQUE, created_at INTEGER NOT NULL)'),
+  env.DB.prepare('CREATE UNIQUE INDEX IF NOT EXISTS ux_meetings_session ON meetings(session_key) WHERE session_key IS NOT NULL'),
+  env.DB.prepare('CREATE TABLE IF NOT EXISTS push_subs (endpoint TEXT PRIMARY KEY, member_id TEXT NOT NULL REFERENCES members(id), p256dh TEXT NOT NULL, auth TEXT NOT NULL, created_at INTEGER NOT NULL)'),
  ]);
  schemaReady=true;
 }
@@ -73,9 +69,21 @@ async function syncRewards(env,pairId){
  const outfit=sanitizeOutfit(p.equipped,n,p.opened);
  await env.DB.prepare('UPDATE pair_prefs SET seen_count=?,equipped=?,version=version+?,updated_at=? WHERE pair_id=?').bind(n,JSON.stringify(outfit),outfit.length!==p.equipped.length?1:0,Date.now(),pairId).run();
 }
-async function insertMeeting(env,pairId,when,source,by){
- await env.DB.prepare('INSERT INTO meetings (id,pair_id,occurred_at,source,created_by,created_at) VALUES (?,?,?,?,?,?)').bind(id(),pairId,when,source,by,Date.now()).run();
- await syncRewards(env,pairId);
+// Records a meeting atomically: one statement inserts only if there is no other
+// meeting within 6 h, and a proximity session (session_key, unique index) can
+// produce at most one row, so two phones confirming at the same moment cannot
+// double count. Returns true if this call created the meeting.
+async function recordMeeting(env,ctx,pairId,{when=Date.now(),source,by=null,sessionKey=null}){
+ const r=await env.DB.prepare(`INSERT OR IGNORE INTO meetings (id,pair_id,occurred_at,source,created_by,created_at,session_key)
+  SELECT ?,?,?,?,?,?,? WHERE NOT EXISTS (SELECT 1 FROM meetings WHERE pair_id=? AND occurred_at>? AND occurred_at<?)`)
+  .bind(id(),pairId,when,source,by,Date.now(),sessionKey,pairId,when-RULES.COOLDOWN,when+RULES.COOLDOWN).run();
+ const created=r.meta?.changes===1;
+ if(created){
+  await syncRewards(env,pairId);
+  const n=await countOf(env,pairId);
+  notify(env,ctx,pairId,by,{title:'Jesteście razem!',body:`Wasze ${n}. spotkanie zapisane ♥`,tag:'meeting'});
+ }
+ return created;
 }
 
 const MEMBER_SQL='SELECT m.id,m.pair_id,m.display_name,m.slot,p.invite_code,p.first_met_at,p.created_at FROM members m JOIN pairs p ON p.id=m.pair_id';
@@ -83,31 +91,73 @@ const MEMBER_SQL='SELECT m.id,m.pair_id,m.display_name,m.slot,p.invite_code,p.fi
 async function member(req,env){const token=(req.headers.get('Authorization')||'').replace(/^Bearer\s+/i,'');if(!/^[a-f0-9]{64}$/.test(token))return null;const hash=await sha(token);
  return await env.DB.prepare(MEMBER_SQL+' WHERE m.token_hash=?').bind(hash).first()||await env.DB.prepare(MEMBER_SQL+' JOIN member_tokens t ON t.member_id=m.id WHERE t.token_hash=?').bind(hash).first()}
 
-function proximity(rows,pair,radius,you,now=Date.now()){
- const mine=rows.find(r=>r.slot===you),other=rows.find(r=>r.slot!==you);
- const live=r=>!!r&&r.location_at>now-FRESH;
- const out={radius,mine:live(mine),partner:live(other),fresh:false,near:false,distance:null,since:null,recorded:!!pair.active_recorded,canConfirm:false};
- if(rows.length===2&&rows.every(r=>live(r)&&r.accuracy<=maxAccuracy(radius))){
-  const d=distance(rows[0].latitude,rows[0].longitude,rows[1].latitude,rows[1].longitude);
-  out.fresh=true;out.distance=Math.round(d/10)*10;out.near=d<=radius;
-  if(out.near&&pair.active_since){out.since=Number(pair.active_since);out.canConfirm=!pair.active_recorded&&now-out.since>=MIN_CONFIRM}
+// ------------------------------------------------------------------ proximity + push helpers
+const PAIR_COLS='first_met_at,created_at,invite_code,active_since,active_recorded,apart_since,confirm1_at,confirm2_at,notified_near_at';
+const MEMBER_COLS='id,display_name,slot,geo_on,ping_at,location_at,latitude,longitude,accuracy';
+const pairRow=(env,pairId)=>env.DB.prepare(`SELECT ${PAIR_COLS} FROM pairs WHERE id=?`).bind(pairId).first();
+async function memberRows(env,pairId,now=Date.now()){
+ // coordinates are erased 15 minutes after the reading: no location history is kept
+ await env.DB.prepare('UPDATE members SET latitude=NULL,longitude=NULL,accuracy=NULL WHERE pair_id=? AND latitude IS NOT NULL AND location_at<?').bind(pairId,now-RULES.KEEP).run();
+ return (await env.DB.prepare(`SELECT ${MEMBER_COLS} FROM members WHERE pair_id=? ORDER BY slot`).bind(pairId).all()).results||[];
+}
+const lastMeeting=async(env,pairId)=>(await env.DB.prepare('SELECT occurred_at FROM meetings WHERE pair_id=? ORDER BY occurred_at DESC LIMIT 1').bind(pairId).first())?.occurred_at??null;
+async function judge(env,pairId,you,now=Date.now()){
+ const [pair,rows,p,last]=await Promise.all([pairRow(env,pairId),memberRows(env,pairId,now),prefs(env,pairId),lastMeeting(env,pairId)]);
+ const me=rows.find(r=>r.slot===you),partner=rows.find(r=>r.slot!==you);
+ return {pair,rows,me,partner,v:verdict({me,partner,pair,radius:p.radius,you,now,lastMeetingAt:last})};
+}
+const setPair=(env,pairId,set)=>{const k=Object.keys(set);return k.length?env.DB.prepare(`UPDATE pairs SET ${k.map(c=>c+'=?').join(',')} WHERE id=?`).bind(...k.map(c=>set[c]),pairId).run():null};
+// operational log without coordinates (wrangler tail)
+const trace=(pairId,v,what)=>console.log(JSON.stringify({t:'proximity',pair:pairId.slice(0,6),what,stage:v.stage,reason:v.reason,d:v.distance,acc:[v.me.acc,v.partner.acc],age:[v.me.age,v.partner.age]}));
+// Push to the pair's phones (all, or all except `except` member id); never delays the response.
+function notify(env,ctx,pairId,except,message){
+ if(!pushReady(env))return;
+ const job=(async()=>{
+  const subs=(await env.DB.prepare('SELECT s.endpoint,s.p256dh,s.auth,s.member_id FROM push_subs s JOIN members m ON m.id=s.member_id WHERE m.pair_id=?').bind(pairId).all()).results||[];
+  for(const sub of subs.filter(x=>x.member_id!==except)){
+   try{const st=await sendPush(env,sub,message,{topic:message.tag});if(st===404||st===410)await env.DB.prepare('DELETE FROM push_subs WHERE endpoint=?').bind(sub.endpoint).run();console.log(JSON.stringify({t:'push',tag:message.tag,status:st}))}
+   catch(e){console.error('push failed',e?.message)}
+  }
+ })();
+ if(ctx?.waitUntil)ctx.waitUntil(job);
+}
+// After a fresh position from member `m`: update the session, record if earned, nudge the partner if useful.
+async function afterPosition(env,ctx,m,now=Date.now()){
+ const {pair,partner,v}=await judge(env,m.pair_id,m.slot,now);
+ const t=transition(v,pair,now);
+ await setPair(env,m.pair_id,t.set);
+ trace(m.pair_id,v,'position');
+ if(t.record){
+  const since=t.set.active_since??pair.active_since;
+  await recordMeeting(env,ctx,m.pair_id,{source:'auto',sessionKey:`${m.pair_id}:${since}`});
+  await env.DB.prepare('UPDATE pairs SET active_recorded=1,confirm1_at=NULL,confirm2_at=NULL WHERE id=?').bind(m.pair_id).run();
  }
- return out;
+ // partner's app is not sending (closed / background) but their last position (<15 min) is near: invite them once per 2 h
+ if(partner?.latitude!=null&&v.stage==='waiting'&&v.reason==='partner_stale'){
+  const me=(await env.DB.prepare('SELECT latitude,longitude,accuracy FROM members WHERE id=?').bind(m.id).first());
+  const d=haversine(me.latitude,me.longitude,partner.latitude,partner.longitude);
+  if(d<=RULES.NEAR&&(!pair.notified_near_at||now-pair.notified_near_at>2*3600000)){
+   await setPair(env,m.pair_id,{notified_near_at:now});
+   notify(env,ctx,m.pair_id,m.id,{title:'Jesteście niedaleko siebie!',body:'Otwórz Razem 💗 Puszystek czeka na wasze spotkanie.',tag:'near'});
+  }
+ }
+}
+function proximityOut(v,me){
+ return {...v,pingAt:Number(me?.ping_at)||null};
 }
 
 async function state(env,m){
- const pair=await env.DB.prepare('SELECT first_met_at,created_at,invite_code,active_since,active_recorded FROM pairs WHERE id=?').bind(m.pair_id).first();if(!pair)return null;
- const ms=await env.DB.prepare('SELECT id,display_name,slot,location_at,latitude,longitude,accuracy FROM members WHERE pair_id=? ORDER BY slot').bind(m.pair_id).all();
+ const {pair,rows,me,v}=await judge(env,m.pair_id,m.slot);if(!pair)return null;
  const meets=await env.DB.prepare('SELECT id,occurred_at,source FROM meetings WHERE pair_id=? ORDER BY occurred_at DESC LIMIT 60').bind(m.pair_id).all();
  const n=await countOf(env,m.pair_id);
  const p=await prefs(env,m.pair_id);
- const rows=ms.results||[];
- return {you:m.slot,members:rows.map(x=>({name:x.display_name,slot:x.slot,locationActive:Number(x.location_at||0)>Date.now()-FRESH})),code:rows.length<2?pair.invite_code:null,firstMetAt:pair.first_met_at,createdAt:pair.created_at,count:n,meetings:meets.results||[],together:!!pair.active_since&&Number(pair.active_since)>Date.now()-3600000,connected:rows.length===2,
+ const subs=(await env.DB.prepare('SELECT COUNT(*) AS n FROM push_subs WHERE member_id=?').bind(m.id).first()).n;
+ return {you:m.slot,members:rows.map(x=>({name:x.display_name,slot:x.slot,locationActive:!!x.geo_on&&Number(x.location_at||0)>Date.now()-RULES.FRESH})),code:rows.length<2?pair.invite_code:null,firstMetAt:pair.first_met_at,createdAt:pair.created_at,count:n,meetings:meets.results||[],together:v.stage==='together'||v.stage==='recorded',connected:rows.length===2,
   rewards:{unlocked:unlockedIds(n),claimed:p.claimed.filter(x=>claimable(BY_ID[x],n,p.opened)),equipped:sanitizeOutfit(p.equipped,n,p.opened,p.claimed),opened:p.opened,version:p.version,lastChange:p.lastChange},
-  proximity:proximity(rows,pair,p.radius,m.slot)};
+  proximity:proximityOut(v,me),push:{available:pushReady(env),key:env.VAPID_PUBLIC||null,subscribed:subs>0}};
 }
 
-async function api(req,env,path){
+async function api(req,env,path,ctx){
  const method=req.method;
  await ensureSchema(env);
  if(method==='POST'&&path==='/api/create'){
@@ -142,9 +192,8 @@ async function api(req,env,path){
  }
  if(method==='POST'&&path==='/api/meeting'){
   const b=await body(req);const when=b?.at?Date.parse(b.at):Date.now();if(!Number.isFinite(when)||when>Date.now()+60000||when<Date.now()-10*365*86400000)return bad('Nieprawidłowa data.');
-  // No duplicate meeting within 6 hours, from either device.
-  const recent=await env.DB.prepare('SELECT id FROM meetings WHERE pair_id=? AND occurred_at BETWEEN ? AND ? LIMIT 1').bind(m.pair_id,when-6*3600000,when+6*3600000).first();if(recent)return bad('To spotkanie jest już zapisane (odstęp 6 godzin).',409);
-  await insertMeeting(env,m.pair_id,when,'manual',m.id);
+  // No duplicate meeting within 6 hours, from either device (checked atomically on insert).
+  if(!await recordMeeting(env,ctx,m.pair_id,{when,source:'manual',by:m.id}))return bad('To spotkanie jest już zapisane (odstęp 6 godzin).',409);
   // a manual entry also closes an ongoing proximity session, so it is not counted twice
   if(when>Date.now()-6*3600000)await env.DB.prepare('UPDATE pairs SET active_recorded=1 WHERE id=? AND active_since IS NOT NULL').bind(m.pair_id).run();
   return ok(await state(env,m));
@@ -153,47 +202,45 @@ async function api(req,env,path){
   const b=await body(req);if(typeof b?.id!=='string')return bad('Brak identyfikatora.');
   await env.DB.prepare('DELETE FROM meetings WHERE id=? AND pair_id=?').bind(b.id,m.pair_id).run();await syncRewards(env,m.pair_id);return ok(await state(env,m));
  }
- if(method==='POST'&&path==='/api/location'){
+ if(method==='POST'&&(path==='/api/location'||path==='/api/check')){
+  // A position from this phone (watchPosition / "Sprawdź"). `ts` is when the
+  // phone measured it: old readings are not stored as fresh. Only the last
+  // position is kept, and only for 15 minutes.
   const b=await body(req);const lat=Number(b?.lat),lon=Number(b?.lon),accuracy=Number(b?.accuracy),now=Date.now();
-  if(!Number.isFinite(lat)||!Number.isFinite(lon)||Math.abs(lat)>90||Math.abs(lon)>180||!Number.isFinite(accuracy)||accuracy<0||accuracy>1500)return bad('Nieprawidłowy pomiar.');
-  // Positions are only transient, overwritten each time. No route or location history.
-  await env.DB.prepare('UPDATE members SET latitude=?,longitude=?,accuracy=?,location_at=? WHERE id=?').bind(lat,lon,accuracy,now,m.id).run();
-  const {radius}=await prefs(env,m.pair_id);
-  const locations=await env.DB.prepare('SELECT latitude,longitude,accuracy,location_at FROM members WHERE pair_id=? ORDER BY slot').bind(m.pair_id).all();
-  if(locations.results.length===2){
-   const [a,c]=locations.results;const fresh=locations.results.every(x=>x.location_at>now-FRESH && x.accuracy<=maxAccuracy(radius));
-   if(fresh){
-    const d=distance(a.latitude,a.longitude,c.latitude,c.longitude);
-    const p=await env.DB.prepare('SELECT active_since,active_recorded,apart_since FROM pairs WHERE id=?').bind(m.pair_id).first();
-    if(d<=radius){
-     if(p.apart_since){await env.DB.prepare('UPDATE pairs SET apart_since=NULL WHERE id=?').bind(m.pair_id).run()}
-     if(!p.active_since){await env.DB.prepare('UPDATE pairs SET active_since=?,active_recorded=0 WHERE id=?').bind(now,m.pair_id).run()}
-     else if(now-p.active_since>=MIN_AUTO && !p.active_recorded){
-      const last=await env.DB.prepare('SELECT occurred_at FROM meetings WHERE pair_id=? ORDER BY occurred_at DESC LIMIT 1').bind(m.pair_id).first();
-      if(!last||now-last.occurred_at>=12*3600000){await insertMeeting(env,m.pair_id,now,'auto',null)}
-      await env.DB.prepare('UPDATE pairs SET active_recorded=1 WHERE id=?').bind(m.pair_id).run();
-     }
-    }else if(d>radius+200){
-     if(!p.apart_since){await env.DB.prepare('UPDATE pairs SET apart_since=? WHERE id=?').bind(now,m.pair_id).run()}
-     else if(now-p.apart_since>=APART_RESET){await env.DB.prepare('UPDATE pairs SET active_since=NULL,active_recorded=0 WHERE id=?').bind(m.pair_id).run()}
-    }
+  if(!Number.isFinite(lat)||!Number.isFinite(lon)||Math.abs(lat)>90||Math.abs(lon)>180||!Number.isFinite(accuracy)||accuracy<0||accuracy>5000)return bad('Nieprawidłowy pomiar.');
+  const ts=Number.isFinite(Number(b?.ts))?Math.min(now,Number(b.ts)):now;
+  if(now-ts>RULES.FRESH)return bad('Ten pomiar jest już nieaktualny.',422);
+  await env.DB.prepare('UPDATE members SET latitude=?,longitude=?,accuracy=?,location_at=?,geo_on=1 WHERE id=?').bind(lat,lon,accuracy,ts,m.id).run();
+  if(path==='/api/check'){
+   // ask the partner's phone for a fresh reading right now (if the app is open it answers within seconds)
+   const partner=await env.DB.prepare('SELECT id,ping_at,location_at,geo_on FROM members WHERE pair_id=? AND id<>?').bind(m.pair_id,m.id).first();
+   if(partner&&(!partner.ping_at||now-partner.ping_at>15000)){
+    await env.DB.prepare('UPDATE members SET ping_at=? WHERE id=?').bind(now,partner.id).run();
+    if(!partner.location_at||now-partner.location_at>RULES.FRESH)notify(env,ctx,m.pair_id,m.id,{title:`${m.display_name} sprawdza, czy jesteście razem`,body:'Otwórz Razem, żeby Puszystek mógł to sprawdzić 💗',tag:'check'});
    }
   }
+  await afterPosition(env,ctx,m,now);
   return ok(await state(env,m));
  }
  if(method==='POST'&&path==='/api/meeting-confirm'){
-  // Confirmed proximity meeting: re-checked on the server from fresh, accurate positions only.
-  const s=await state(env,m),pr=s.proximity;
-  if(!pr.fresh)return bad('Brak świeżej lokalizacji obu osób.',409);
-  if(!pr.near)return bad('Nie jesteście teraz blisko siebie.',409);
-  if(pr.recorded)return bad('To spotkanie jest już zaliczone.',409);
-  if(!pr.canConfirm)return bad('Jeszcze chwilka — sprawdzamy, czy na pewno jesteście razem.',409);
-  const now=Date.now();
-  const recent=await env.DB.prepare('SELECT id FROM meetings WHERE pair_id=? AND occurred_at>? LIMIT 1').bind(m.pair_id,now-6*3600000).first();
-  await env.DB.prepare('UPDATE pairs SET active_recorded=1 WHERE id=?').bind(m.pair_id).run();
-  if(recent)return bad('Spotkanie z ostatnich godzin jest już zapisane.',409);
-  await insertMeeting(env,m.pair_id,now,'auto',m.id);
-  return ok(await state(env,m));
+  // "Jesteśmy razem": decided on the server from both phones' fresh positions.
+  // Precise readings: one confirmation records the meeting. Weaker GPS: both people confirm.
+  const now=Date.now();const {pair,v}=await judge(env,m.pair_id,m.slot,now);
+  trace(m.pair_id,v,'confirm');
+  if(v.stage==='recorded')return bad(v.reason==='cooldown'?'Spotkanie z ostatnich godzin jest już zapisane.':'To spotkanie jest już zaliczone.',409);
+  if(v.stage!=='together')return bad(REASON_TEXT[v.reason]||'Nie widzimy, że jesteście razem.',409);
+  const since=pair.active_since||now;
+  if(!pair.active_since)await setPair(env,m.pair_id,{active_since:now,active_recorded:0,apart_since:null});
+  const partnerOk=v.partnerConfirm;
+  if(v.strong||partnerOk){
+   const created=await recordMeeting(env,ctx,m.pair_id,{source:'auto',by:m.id,sessionKey:`${m.pair_id}:${since}`});
+   await env.DB.prepare('UPDATE pairs SET active_recorded=1,confirm1_at=NULL,confirm2_at=NULL WHERE id=?').bind(m.pair_id).run();
+   if(!created)return bad('To spotkanie jest już zaliczone.',409);
+   return ok(await state(env,m));
+  }
+  await setPair(env,m.pair_id,{[`confirm${m.slot}_at`]:now});
+  notify(env,ctx,m.pair_id,m.id,{title:`${m.display_name} potwierdza wasze spotkanie`,body:'Otwórz Razem i potwierdź, że jesteście razem 💕',tag:'confirm'});
+  return ok({...await state(env,m),waitingForPartner:true});
  }
  if(method==='POST'&&path==='/api/claim'){
   // Claim an earned reward into the pair's one shared inventory; a wearable goes on if its slot is free.
@@ -253,6 +300,22 @@ async function api(req,env,path){
   await env.DB.prepare('INSERT INTO member_recovery(member_id,code_hash,created_at) VALUES (?,?,?) ON CONFLICT(member_id) DO UPDATE SET code_hash=excluded.code_hash,created_at=excluded.created_at').bind(m.id,await sha('login:'+c),Date.now()).run();
   return ok({code:c});
  }
+ if(method==='POST'&&path==='/api/name'){
+  // each person's own name, shown to both phones
+  const b=await body(req),name=norm(b?.name);if(name.length<2)return bad('Podaj imię (minimum 2 znaki).');
+  await env.DB.prepare('UPDATE members SET display_name=? WHERE id=?').bind(name,m.id).run();
+  return ok(await state(env,{...m,display_name:name}));
+ }
+ if(method==='POST'&&path==='/api/push-subscribe'){
+  const b=await body(req),ep=b?.endpoint,k=b?.keys;
+  if(typeof ep!=='string'||!/^https:\/\//.test(ep)||ep.length>1000||typeof k?.p256dh!=='string'||typeof k?.auth!=='string')return bad('Nieprawidłowa subskrypcja.');
+  await env.DB.prepare('INSERT INTO push_subs(endpoint,member_id,p256dh,auth,created_at) VALUES (?,?,?,?,?) ON CONFLICT(endpoint) DO UPDATE SET member_id=excluded.member_id,p256dh=excluded.p256dh,auth=excluded.auth').bind(ep,m.id,k.p256dh,k.auth,Date.now()).run();
+  if(b.test)notify(env,ctx,m.pair_id,null,{title:'Powiadomienia włączone',body:'Puszystek da znać, gdy będziecie blisko 💗',tag:'hello'});
+  return ok(await state(env,m));
+ }
+ if(method==='POST'&&path==='/api/push-unsubscribe'){
+  await env.DB.prepare('DELETE FROM push_subs WHERE member_id=?').bind(m.id).run();return ok(await state(env,m));
+ }
  if(method==='POST'&&path==='/api/settings'){
   const b=await body(req),radius=Number(b?.radius);
   if(!RADII.includes(radius))return bad('Wybierz zasięg: '+RADII.join(', ')+' m.');
@@ -262,8 +325,10 @@ async function api(req,env,path){
   return ok(await state(env,m));
  }
  if(method==='POST'&&path==='/api/location-off'){
-  await env.DB.prepare('UPDATE members SET latitude=NULL,longitude=NULL,accuracy=NULL,location_at=NULL WHERE id=?').bind(m.id).run();return ok({ok:true});
+  // this person stops sharing: position erased at once
+  await env.DB.prepare('UPDATE members SET latitude=NULL,longitude=NULL,accuracy=NULL,location_at=NULL,geo_on=0 WHERE id=?').bind(m.id).run();return ok(await state(env,m));
  }
  return bad('Nie znaleziono adresu.',404);
 }
-export default {async fetch(request,env){const url=new URL(request.url),path=url.pathname;if(path.startsWith('/api/')){if(!env.DB)return bad('Brak połączenia z bazą.',503);if(request.method==='OPTIONS')return new Response(null,{status:405});try{return await api(request,env,path)}catch(e){if(e?.message==='busy')return bad('Druga osoba właśnie coś zmienia — spróbujcie za chwilę.',409);console.error('Razem API error',e);return bad('Wystąpił problem. Spróbuj ponownie.',500)}}if(env.ASSETS)return env.ASSETS.fetch(request);return new Response('Brak zasobów strony',{status:404})}};
+const REASON_TEXT={not_connected:'Najpierw połączcie się kodem.',me_off:'Włącz lokalizację na tym telefonie.',me_stale:'Czekamy na lokalizację tego telefonu.',me_inaccurate:'Lokalizacja tego telefonu jest za mało dokładna.',partner_off:'Druga osoba nie udostępnia lokalizacji.',partner_stale:'Druga osoba musi mieć otwarte Razem.',partner_inaccurate:'Lokalizacja drugiej osoby jest za mało dokładna.',near:'Jesteście blisko, ale jeszcze nie razem.',far:'Jesteście teraz daleko od siebie.'};
+export default {async fetch(request,env,ctx){const url=new URL(request.url),path=url.pathname;if(path.startsWith('/api/')){if(!env.DB)return bad('Brak połączenia z bazą.',503);if(request.method==='OPTIONS')return new Response(null,{status:405});try{return await api(request,env,path,ctx)}catch(e){if(e?.message==='busy')return bad('Druga osoba właśnie coś zmienia — spróbujcie za chwilę.',409);console.error('Razem API error',e);return bad('Wystąpił problem. Spróbuj ponownie.',500)}}if(env.ASSETS)return env.ASSETS.fetch(request);return new Response('Brak zasobów strony',{status:404})}};

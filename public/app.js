@@ -3,9 +3,10 @@
 // Plus the shared wardrobe (#/kolekcja), the meeting celebration and Puszystek.
 // ?demo=1 renders the mock-up data and never writes to the API
 // (?count=N and ?outfit=a,b override the demo values; ?still=1 freezes idle acts).
-import { REWARDS as CATALOG, BY_ID, CATEGORIES, SLOTS, SET_SLOTS, MILESTONES, RARITY, rarityOf, unlockedIds, sanitizeOutfit, claimable, isVisible, isSpecial } from './rewards.js';
+import { REWARDS as CATALOG, BY_ID, CATEGORIES, SLOTS, SET_SLOTS, MILESTONES, RARITY, rarityOf, unlockedIds, sanitizeOutfit, claimable, isVisible, isSpecial, isHouse } from './rewards.js';
 import { puszystekHTML, Puszystek, WEAR, DECOR } from './puszystek.js';
 import { medalSVG } from './medals.js';
+import { ART as HOUSE_ART, DEFAULTS as HOUSE_DEFAULTS, DEFAULT_NAMES, ROOM, layout as houseLayout, roomHTML, HouseLife } from './house.js';
 
 const root = document.getElementById('app');
 const params = new URLSearchParams(location.search);
@@ -18,13 +19,13 @@ const S = 687 / 390; // reference screen px per design px
 const reduced = matchMedia('(prefers-reduced-motion: reduce)');
 
 let token = DEMO ? '' : localStorage.getItem(cacheKey) || '';
-let state = null, mode = 'create', route = '', sheet = '', locTimer = null, geoEnabled = false, working = false, tileStart = null, collCat = 'all', overlay = null;
+let state = null, mode = 'create', route = '', sheet = '', working = false, tileStart = null, collCat = 'all', overlay = null;
 let freshItem = '', loginCode = '';
 // the last reward whose state changed here (claimed / worn / pinned), for its state animation
 let justChanged = null;
 const pref = (k, d) => { try { const v = localStorage.getItem('razem-' + k); return v === null ? d : v === '1'; } catch { return d; } };
 const setPref = (k, v) => { try { localStorage.setItem('razem-' + k, v ? '1' : '0'); } catch { } };
-let notifyOn = DEMO || pref('notify', false), syncOn = DEMO || pref('sync', true);
+let syncOn = DEMO || pref('sync', true);
 
 const h = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const plural = (n, a, b, c) => { const v = Math.abs(n); return v === 1 ? a : (v % 10 >= 2 && v % 10 <= 4 && (v % 100 < 12 || v % 100 > 14)) ? b : c; };
@@ -90,9 +91,10 @@ const TILE_BG = { nakrycia: 'linear-gradient(160deg,#fff4dc,#ffe2ef)', ozdoby: '
 // badges are medallions in their rarity's metal (medals.js)
 const badgeArt = (r, cls = '') => medalSVG(r, rarityOf(r), cls);
 const isBadge = r => r.slot === 'pin' || (r.cat === 'odznaki' && !WEAR[r.id]);
-const FEATURED = CATALOG.filter(r => !r.hidden && r.at % 10 === 0);
+const FEATURED = CATALOG.filter(r => !r.hidden && r.at % 10 === 0 && !isHouse(r));
 function artHTML(r) {
   if (TILE_ART[r.id]) return `<img src="/img/${TILE_ART[r.id]}.webp" alt=""${TILE_FILTER[r.id] ? ` style="filter:${TILE_FILTER[r.id]}"` : ''}>`;
+  if (isHouse(r)) return `<img class="px-art house-art" src="/img/house/${HOUSE_ART[r.id].src}.png" alt="">`;
   if (isBadge(r)) return badgeArt(r);
   if (WEAR[r.id]) return `<img class="px-art" src="/img/${WEAR[r.id].src}" alt="">`;
   if (DECOR[r.id]) return `<img class="px-art decor-art" src="/img/${DECOR[r.id].src}" alt="">`;
@@ -105,8 +107,8 @@ const itemStatus = (r, m) => m.n < r.at ? 'locked' : !m.claimed.includes(r.id) ?
 function statusText(r, st) {
   if (st === 'locked') return meetings(r.at);
   if (st === 'ready') return 'Do odebrania';
-  if (st === 'worn') return r.slot === 'pin' ? 'Na liczniku' : SET_SLOTS.includes(r.slot) ? 'Ustawione' : 'Założone';
-  return isBadge(r) ? 'W gablocie' : 'W ekwipunku';
+  if (st === 'worn') return isHouse(r) ? 'W domku' : r.slot === 'pin' ? 'Na liczniku' : SET_SLOTS.includes(r.slot) ? 'Ustawione' : 'Założone';
+  return isHouse(r) ? 'W schowku' : isBadge(r) ? 'W gablocie' : 'W ekwipunku';
 }
 const STATUS_IC = { locked: () => I.lock, ready: () => I.gift, worn: r => r.slot === 'pin' ? I.pinIc : I.check, owned: r => isBadge(r) ? I.shelf : '' };
 function itemTile(r, m, extra = '') {
@@ -139,7 +141,8 @@ function demoState() {
     firstMetAt: (d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`)(new Date(now - 214 * DEMO_DAY)),
     meetings: [{ id: 'd1', occurred_at: now - 3 * DEMO_DAY - 3600000, source: 'auto' }, { id: 'd2', occurred_at: now - 9 * DEMO_DAY, source: 'manual' }],
     rewards: { unlocked: unlockedIds(n), claimed: demoClaimed ??= CATALOG.filter(r => claimable(r, n, demoOpened) && (params.has('outfit') || !['bowLav', 'week'].includes(r.id))).map(r => r.id), equipped: sanitizeOutfit(demoOutfit, n, demoOpened), opened: demoOpened, version: 1 },
-    proximity: { radius: 150, mine: true, partner: true, fresh: true, near: true, distance: 40, since: now - 900000, recorded: true, canConfirm: false },
+    proximity: { stage: 'recorded', reason: 'recorded', radius: 100, distance: 4, strong: true, since: now - 900000, held: 900000, canConfirm: false, recorded: true, me: { on: true, age: 4000, acc: 12 }, partner: { on: true, age: 7000, acc: 14 } },
+    push: { available: false, subscribed: false },
   };
 }
 
@@ -164,7 +167,8 @@ function model() {
     outfit: rw.equipped || [], opened: rw.opened || [], claimed: rw.claimed || [],
   };
   // earned rewards waiting to be claimed into the shared inventory
-  m.ready = CATALOG.filter(r => claimable(r, n, m.opened) && !m.claimed.includes(r.id));
+  m.ready = CATALOG.filter(r => claimable(r, n, m.opened) && !m.claimed.includes(r.id) && !isHouse(r));
+  m.houseReady = CATALOG.filter(r => isHouse(r) && claimable(r, n, m.opened) && !m.claimed.includes(r.id));
   m.pin = m.outfit.map(id => BY_ID[id]).find(r => r?.slot === 'pin');
   if (DEMO && !params.has('count')) Object.assign(m, { goal: 50, next: 60, level: 4, levelGoal: 50, left: 23, nodes: [10, 20, 30, 40, 50, 60], reachedAll: 5 });
   m.reached = m.reachedAll ?? m.nodes.filter(v => n >= v).length;
@@ -198,6 +202,20 @@ async function request(path, data) {
 }
 
 // ------------------------------------------------------------------ shell
+// "Miłosz ♡ Kornelia | Zawsze razem lepiej": both names from the server; the
+// slogan steps aside when the names need the room (settleHeader).
+function taglineHTML() {
+  if (!state) return `<span class="slogan">Ty + &lt;3<i>|</i>Zawsze razem lepiej</span>`;
+  const byslot = s => state.members?.find(m => m.slot === s)?.name;
+  const a = byslot(1), b = byslot(2);
+  const names = b ? `<b>${h(a)}</b>${I.heart('tl-heart')}<b>${h(b)}</b>` : `<b>${h(a || myName())}</b>${I.heart('tl-heart')}<b class="wait">czeka na drugą osobę</b>`;
+  return `<span class="pair" title="${h(a || '')}${b ? ' i ' + h(b) : ''}">${names}</span><span class="slogan"><i>|</i>Zawsze razem lepiej</span>`;
+}
+function settleHeader() {
+  const t = document.querySelector('.tagline'); if (!t) return;
+  const html = taglineHTML(); if (t.dataset.html !== html) { t.innerHTML = html; t.dataset.html = html; }
+  t.classList.remove('short'); if (t.scrollWidth > t.clientWidth + 1) t.classList.add('short');
+}
 function shell() {
   root.innerHTML = `<div class="app" data-route="${route}">
     <div class="stage">
@@ -208,7 +226,7 @@ function shell() {
         <h1 class="sr">Razem</h1>
         <img class="logo" src="/img/logo-razem.svg" alt="Razem" data-action="home" width="494" height="162">
         ${I.heart('logo-heart')}
-        <p class="tagline">Ty + &lt;3<i>|</i>Zawsze razem lepiej</p>
+        <p class="tagline">${taglineHTML()}</p>
         <button class="gear" data-action="settings" aria-label="Ustawienia">${I.gear}</button>
         ${I.heart('link-heart')}
         <span class="avatar-hit a" title="${h(state?.members?.[0]?.name || '')}"></span><span class="avatar-hit b" title="${h(state?.members?.[1]?.name || '')}"></span>
@@ -242,11 +260,12 @@ function viewHome(m) {
     <span class="div"></span>
     <button class="stat s2 tap" data-action="history"><span class="ic pink">${I.clock}</span><span class="lbl">Ostatnie spotkanie:</span><span class="val">${lastLabel(m.d)}</span>${I.chev()}</button>
   </section>
-  <button class="pill rise ${geoEnabled ? 'on' : ''}" style="--i:2" data-action="detect">${I.pin()}<span>Auto-zliczanie, gdy jesteście razem</span><span data-action="location-info" role="button" aria-label="Jak to działa">${I.info()}</span></button>
+  <button class="pill rise ${pillState(m).cls}" style="--i:2" data-action="detect">${I.pin()}<span>${pillState(m).text}</span><span data-action="location-info" role="button" aria-label="Jak to działa">${I.info()}</span></button>
   <img class="meadow-bg" src="/img/meadow-home.webp" alt="" style="position:absolute;left:0;width:100%;top:${dp(1150 / S)}">
   ${themeGlow(m, 1150)}
   ${deco('home')}
   ${cat('home')}
+  <button class="house-btn" data-action="house" aria-label="Domek Puszystka${m.houseReady.length ? `, ${m.houseReady.length} nowe rzeczy` : ''}"><img class="px-art" src="/img/house/icon.png" alt="">${m.houseReady.length ? `<span class="dot">${m.houseReady.length}</span>` : ''}</button>
   <div class="bubble" ${!DEMO && state && !state.connected ? 'data-action="copy"' : ''}>${phrase(m)}</div>`;
 }
 const hearts4 = () => [8.6, 15.8, 34, 64.6].map((l, i) => `<span class="wh" style="left:${dp(l + 22)};animation-delay:${i * .4}s">${I.heart('', '#fff')}</span>`).join('');
@@ -300,16 +319,52 @@ function viewRewards(m) {
 }
 const hearts3 = () => [27, 52, 74].map((l, i) => `<span class="wh" style="left:${dp(l)};animation-delay:${i * .5}s">${I.heart('', '#fff')}</span>`).join('');
 
-// What the detection card says, from the server's proximity verdict.
+// ------------------------------------------------------------------ meeting detection: words
+// Everything people read about detection comes from the server's verdict
+// (stage + reason) and this phone's own geolocation state.
+const partnerName = () => otherName();
+function reasonText(p) {
+  const P = h(partnerName()), d = p?.distance != null ? fmtDist(p.distance) : '';
+  if (geoError === 'denied') return 'Brak zgody na lokalizację dla Razem. Na iPhonie: Ustawienia → Prywatność → Usługi lokalizacji → Razem/Safari → „Podczas używania”.';
+  if (geoError && geoOn && !p?.me?.age) return 'Ten telefon nie może teraz ustalić pozycji. Spróbuj bliżej okna lub na zewnątrz.';
+  return ({
+    not_connected: 'Najpierw połączcie się kodem z ustawień.',
+    me_off: 'Włącz lokalizację na tym telefonie, żeby Puszystek mógł sprawdzić, czy jesteście razem.',
+    me_stale: 'Czekamy na pomiar GPS z tego telefonu…',
+    me_inaccurate: `GPS tego telefonu jest teraz mało dokładny (±${p?.me?.acc} m). Spróbuj bliżej okna albo na zewnątrz.`,
+    partner_off: `${P} nie ma włączonego udostępniania lokalizacji.`,
+    partner_stale: `${P} nie ma teraz otwartej aplikacji Razem. Gdy ją otworzy, sprawdzimy od razu.`,
+    partner_inaccurate: `GPS u ${P} jest teraz mało dokładny (±${p?.partner?.acc} m).`,
+    near: `Jesteście niedaleko siebie (ok. ${d}). Spotkanie liczy się, gdy jesteście naprawdę razem.`,
+    far: `Jesteście teraz daleko od siebie (ok. ${d}).`,
+    together_hold: 'Jesteście razem! Jeszcze chwilka i spotkanie zapisze się samo.',
+    together_auto: 'Jesteście razem! Zapisujemy spotkanie…',
+    together_confirm: 'Wygląda na to, że jesteście razem, ale GPS jest mniej dokładny. Potwierdźcie spotkanie oboje.',
+    recorded: 'To spotkanie jest już zaliczone ♥',
+    cooldown: 'Spotkanie z ostatnich 6 godzin jest już zapisane.',
+  })[p?.reason] || 'Sprawdzamy, czy jesteście razem…';
+}
+function pillState(m) {
+  const p = m.pr || {};
+  if (DEMO || !geoOn) return { cls: '', text: 'Auto-zliczanie, gdy jesteście razem' };
+  if (geoError === 'denied') return { cls: 'warn', text: 'Brak zgody na lokalizację' };
+  if (p.stage === 'together') return { cls: 'hot', text: `Wygląda na to, że jesteście razem! ${I.heart('ph')}` };
+  if (p.stage === 'recorded') return { cls: 'on', text: `Spotkanie zaliczone ${I.heart('ph')}` };
+  if (p.stage === 'near') return { cls: 'near', text: `Jesteście niedaleko siebie! ${I.heart('ph')}` };
+  if (p.stage === 'far') return { cls: 'on', text: `Puszystek czeka na wasze spotkanie` };
+  if (p.reason === 'partner_stale' || p.reason === 'partner_off') return { cls: 'on', text: `Czekamy na ${h(partnerName())}…` };
+  return { cls: 'on checking', text: 'Sprawdzamy, czy jesteście razem…' };
+}
+// What the detection card says
 function detectCopy(m) {
-  const p = m.pr;
-  if (DEMO || (p.near && p.recorded)) return { title: 'Spotkanie wykryte!', sub: `Jesteście razem ${I.sparkHeart}`, together: true };
-  if (p.near && p.canConfirm) return { title: 'Jesteście blisko!', sub: `ok. ${fmtDist(p.distance)} od siebie ${I.sparkHeart}`, together: true, cta: true };
-  if (p.near) return { title: 'Jesteście blisko!', sub: 'Sprawdzamy jeszcze chwilę…', together: true };
-  if (p.fresh) return { title: 'Szukamy siebie…', sub: `Jeszcze ${fmtDist(p.distance)} od siebie`, apart: true };
-  if (geoEnabled && !p.partner) return { title: 'Czekamy na drugą osobę', sub: 'Niech otworzy Razem z włączoną lokalizacją', apart: true };
-  if (geoEnabled) return { title: 'Szukamy siebie…', sub: 'Czekamy na dokładniejszą lokalizację', apart: true };
-  return { title: 'Wykrywanie spotkań', sub: 'Włączcie lokalizację na obu telefonach', apart: true };
+  const p = m.pr || {};
+  if (DEMO || p.stage === 'recorded') return { title: 'Spotkanie wykryte!', sub: `Jesteście razem ${I.sparkHeart}`, together: true };
+  if (p.stage === 'together') return { title: 'Jesteście razem!', sub: `ok. ${fmtDist(p.distance)} od siebie ${I.sparkHeart}`, together: true, cta: true };
+  if (p.stage === 'near') return { title: 'Jesteście niedaleko!', sub: `ok. ${fmtDist(p.distance)} od siebie ${I.sparkHeart}`, apart: true, check: true };
+  if (p.stage === 'far') return { title: 'Szukamy siebie…', sub: `Jeszcze ${fmtDist(p.distance)} od siebie`, apart: true, check: true };
+  if (!geoOn) return { title: 'Wykrywanie spotkań', sub: 'Włączcie lokalizację na obu telefonach', apart: true, check: true };
+  if (p.reason === 'partner_stale' || p.reason === 'partner_off') return { title: `Czekamy na ${h(partnerName())}`, sub: 'Niech otworzy Razem z włączoną lokalizacją', apart: true, check: true };
+  return { title: 'Sprawdzamy…', sub: 'Czy jesteście razem?', apart: true, check: true };
 }
 
 function viewDetect(m) {
@@ -330,10 +385,10 @@ function viewDetect(m) {
       <div class="acc" data-action="radius" role="button" aria-label="Zasięg wykrywania">${I.pin()}Dokładność: w przybliżeniu${I.info()}</div>
       ${DEMO ? '<span class="preview-tag">Podgląd</span>' : ''}
     </div>
-    <div class="caption">${c.cta ? `${I.heart()}<div class="near-cta"><button class="btn-main" data-action="confirm-meeting">Zaczynamy spotkanie ${I.heart('', '#fff')}</button><span>Potwierdźcie,<br>a zapiszemy je w pasku.</span></div>` : `${I.heart()}<p>Gdy obie osoby są blisko siebie,<br>spotkanie zapisuje się <em>automatycznie.</em></p>`}</div>
+    <div class="caption">${c.cta ? `${I.heart()}<div class="near-cta"><button class="btn-main" data-action="confirm-meeting">Zaliczamy spotkanie ${I.heart('', '#fff')}</button><span>${m.pr?.needsBoth ? 'Potwierdźcie<br>oboje.' : 'Albo zapisze się<br>samo za chwilę.'}</span></div>` : c.check && !DEMO ? `${I.heart()}<div class="near-cta"><button class="btn-main" data-action="check-now">Sprawdź, czy jesteśmy razem</button></div>` : `${I.heart()}<p>Gdy obie osoby są blisko siebie,<br>spotkanie zapisuje się <em>automatycznie.</em></p>`}</div>
   </section>
-  <section class="card row rise" style="--i:1;top:${dp(525.1)}"><span class="ic loc">${I.pin('')}</span><h4>Lokalizacja</h4><p>Pozwala wykrywać, kiedy jesteście razem.</p><button class="switch" role="switch" aria-checked="${DEMO || geoEnabled}" data-action="toggle-location" aria-label="Lokalizacja"></button></section>
-  <section class="card row rise" style="--i:2;top:${dp(583.2)}"><span class="ic bell">${I.bell}</span><h4>Powiadomienia</h4><p>Otrzymujecie informację, gdy się spotkacie.</p><button class="switch" role="switch" aria-checked="${notifyOn}" data-action="toggle-notify" aria-label="Powiadomienia"></button></section>
+  <section class="card row rise" style="--i:1;top:${dp(525.1)}"><span class="ic loc">${I.pin('')}</span><h4>Lokalizacja</h4><p>Pozwala wykrywać, kiedy jesteście razem.</p><button class="switch" role="switch" aria-checked="${DEMO || geoOn}" data-action="toggle-location" aria-label="Lokalizacja"></button></section>
+  <section class="card row rise" style="--i:2;top:${dp(583.2)}"><span class="ic bell">${I.bell}</span><h4>Powiadomienia</h4><p>Puszystek da znać, gdy będziecie blisko.</p><button class="switch" role="switch" aria-checked="${DEMO || !!state?.push?.subscribed}" data-action="toggle-notify" aria-label="Powiadomienia"></button></section>
   <section class="card row rise" style="--i:3;top:${dp(641.6)};height:${dp(64.4)}"><span class="ic sync" style="top:${dp(11.6)}">${I.sync}</span><h4>Wspólna synchronizacja</h4><p>Spotkania zapisują się automatycznie<br>w Waszym pasku.</p><button class="switch" role="switch" aria-checked="${syncOn}" data-action="toggle-sync" aria-label="Wspólna synchronizacja" style="top:${dp(14.2)}"></button></section>
   <img class="meadow-bg" src="/img/meadow-detect.webp" alt="" style="position:absolute;left:0;width:100%;top:${dp(1245 / S)}">
   ${themeGlow(m, 1245)}
@@ -343,11 +398,11 @@ function viewDetect(m) {
 }
 
 function viewCollection(m) {
-  const visible = CATALOG.filter(r => isVisible(r, m.opened));
+  const visible = CATALOG.filter(r => isVisible(r, m.opened) && !isHouse(r));
   const owned = visible.filter(r => m.claimed.includes(r.id)).length;
   const worn = m.outfit.map(id => BY_ID[id]).filter(Boolean);
   const box = [178, 0, 236];
-  const cats = collCat === 'all' ? Object.keys(CATEGORIES) : [collCat];
+  const cats = collCat === 'all' ? Object.keys(CATEGORIES).filter(c => c !== 'domek') : [collCat];
   return `<div class="coll-wrap">
     <section class="card wardrobe rise" style="--i:0">
       <img class="plate" src="/img/unlock-rewards.webp" alt="">
@@ -359,7 +414,7 @@ function viewCollection(m) {
       ${m.ready.length ? `<button class="claim-all" data-action="claim-all">${I.gift}Odbierz wszystko (${m.ready.length})</button>` : ''}
       ${puszystekHTML({ pose: 'home', box, outfit: m.outfit, label: 'Puszystek', fresh: freshItem, stagePx: (x, y, w) => `right:${dp(8)};bottom:${dp(-6)};width:${dp(w / S * .74)}` })}
     </section>
-    <div class="cats" role="group" aria-label="Kategorie">${[['all', 'Wszystkie'], ...Object.entries(CATEGORIES)].map(([k, v]) => `<button aria-pressed="${collCat === k}" data-action="coll-cat" data-cat="${k}">${v}</button>`).join('')}</div>
+    <div class="cats" role="group" aria-label="Kategorie">${[['all', 'Wszystkie'], ...Object.entries(CATEGORIES).filter(([k]) => k !== 'domek')].map(([k, v]) => `<button aria-pressed="${collCat === k}" data-action="coll-cat" data-cat="${k}">${v}</button>`).join('')}</div>
     ${cats.map((c, i) => { const list = visible.filter(r => r.cat === c); return `<section class="card coll-card rise" style="--i:${i + 1}"><h3>${CATEGORIES[c]} <small>${list.filter(r => m.claimed.includes(r.id)).length} z ${list.length}</small></h3><div class="grid">${list.map(r => itemTile(r, m)).join('')}</div></section>`; }).join('')}
     <p class="coll-note">Nagrody zdobywacie razem. To, co założy jedna osoba, druga zobaczy u siebie.</p>
   </div>`;
@@ -385,17 +440,92 @@ function viewOnboarding() {
   <div class="bubble">Puszystek czeka na waszą historię ${I.hearts2}</div>`;
 }
 
+// ------------------------------------------------------------------ Domek Puszystka
+// A full-screen layer over home. The room size is an integer number of device
+// pixels per art pixel (crisp pixel art), as large as the screen allows.
+const life = new HouseLife(pusz, reduced);
+let houseEditing = false, houseSig = '', houseOrigin = null;
+function houseInfo(m) {
+  const items = CATALOG.filter(isHouse), placed = Object.keys(houseLayout(m.outfit)).length;
+  const next = items.find(r => m.n < r.at);
+  return `<div class="h-prog"><p><b>${items.filter(r => m.claimed.includes(r.id)).length}</b> z ${items.length} rzeczy w domku${next ? ` · kolejna: <em>${h(next.name)}</em> za ${meetings(next.at - m.n)}` : ' · wszystko zdobyte!'}</p>
+    <div class="bar"><i style="width:${(Math.min(1, m.n / (next?.at || m.n || 1)) * 100).toFixed(1)}%"></i></div></div>
+    <div class="h-tray" role="list">${items.map(r => itemTile(r, m, 'mini')).join('')}</div>${placed ? '' : ''}`;
+}
+function houseScale(box) {
+  const dpr = window.devicePixelRatio || 1, cs = getComputedStyle(box);
+  // the room's content box, minus its white frame (3 px each side)
+  const w = box.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight) - 6, hgt = box.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom) - 6;
+  const k = Math.max(1, Math.floor(Math.min(w * dpr / ROOM.w, hgt * dpr / ROOM.h)));
+  return k / dpr;
+}
+function syncHouse() {
+  let el = document.getElementById('house');
+  if (route !== 'house' || !state) {
+    if (el && !el.classList.contains('out')) { el.classList.add('out'); life.stop(); setTimeout(() => el.remove(), 320); if (!overlay) pusz.mount(document.querySelector('.view:not(.leave) .pusz')); }
+    houseEditing = false; houseSig = '';
+    return;
+  }
+  const m = model();
+  if (!el || el.classList.contains('out')) {
+    el?.remove();
+    el = document.createElement('div'); el.id = 'house'; el.className = 'house'; el.setAttribute('role', 'dialog'); el.setAttribute('aria-label', 'Domek Puszystka');
+    if (houseOrigin) { el.style.setProperty('--ox', houseOrigin[0] + 'px'); el.style.setProperty('--oy', houseOrigin[1] + 'px'); }
+    el.innerHTML = `<header class="h-top"><button class="h-back" data-action="house-back" aria-label="Wróć">${I.back}</button><h2>Domek Puszystka</h2><button class="h-edit" data-action="house-edit" aria-pressed="false">Urządzaj</button></header>
+      <div class="room-wrap"><div class="room"></div></div><div class="h-panel"></div>`;
+    document.body.appendChild(el);
+  }
+  el.classList.toggle('editing', houseEditing);
+  const ed = el.querySelector('.h-edit'); ed.textContent = houseEditing ? 'Gotowe' : 'Urządzaj'; ed.setAttribute('aria-pressed', String(houseEditing));
+  el.querySelector('.h-panel').innerHTML = houseInfo(m);
+  const by = houseLayout(m.outfit);
+  const sig = JSON.stringify([by, houseEditing, m.outfit]);
+  const room = el.querySelector('.room');
+  room.style.setProperty('--px', houseScale(el.querySelector('.room-wrap')) + 'px');
+  if (sig !== houseSig) {
+    const fresh = freshItem && isHouse(BY_ID[freshItem]) ? freshItem : '';
+    room.innerHTML = roomHTML(m.outfit, { editing: houseEditing, fresh, outfit: m.outfit });
+    houseSig = sig;
+    if (!overlay) pusz.mount(room.querySelector('.pusz'));
+    life.mount(room.querySelector('.hcat'), by);
+    if (fresh) { life.cheer(BY_ID[fresh].slot); freshItem = ''; }
+  }
+}
+addEventListener('resize', () => { const el = document.getElementById('house'); if (el) el.querySelector('.room').style.setProperty('--px', houseScale(el.querySelector('.room-wrap')) + 'px'); });
+// a house sprite at the largest whole-pixel scale that fits `box` css px
+const houseArt = (id, box) => { const a = HOUSE_ART[id], k = Math.max(1, Math.min(6, Math.floor(box / Math.max(a.w, a.h)))); return `<img class="px-art" src="/img/house/${a.src}.png" alt="" style="width:${a.w * k}px;height:${a.h * k}px">`; };
+// one place in the room: every item that fits there, with its state and action
+function slotSheet(slot, m) {
+  const by = houseLayout(m.outfit), cur = by[slot];
+  const items = CATALOG.filter(r => r.slot === slot);
+  const def = HOUSE_DEFAULTS[slot];
+  const art = id => `<img class="px-art" src="/img/house/${HOUSE_ART[id].src}.png" alt="">`;
+  const row = (id, name, state, btn) => `<div class="hs-row${(cur === id || (!cur && id === def)) ? ' on' : ''}"><span class="hs-art">${art(id)}</span><div><b>${h(name)}</b><small>${state}</small></div>${btn}</div>`;
+  const rows = [];
+  if (def) rows.push(row(def, DEFAULT_NAMES[def], !cur ? 'Stoi w domku' : 'Podstawowe', !cur ? '' : `<button class="btn-soft sm" data-action="unequip" data-id="${cur}">Ustaw</button>`));
+  for (const r of items) {
+    const st = itemStatus(r, m);
+    rows.push(row(r.id, r.name, st === 'locked' ? `${I.lock} za ${meetings(r.at - m.n)}` : st === 'ready' ? 'Do odebrania' : st === 'worn' ? 'Stoi w domku' : 'W schowku',
+      st === 'locked' ? '' : st === 'ready' ? `<button class="btn-soft sm hot" data-action="claim" data-id="${r.id}">Odbierz</button>` : st === 'worn' ? `<button class="btn-soft sm" data-action="unequip" data-id="${r.id}">Schowaj</button>` : `<button class="btn-soft sm" data-action="equip" data-id="${r.id}">Ustaw</button>`));
+  }
+  return `<h2>${SLOTS[slot]}</h2><p>Co ma tu stać? Zmiana jest od razu widoczna w domku u was obojga.</p>${rows.join('')}`;
+}
+
 // ------------------------------------------------------------------ render + transitions
-const ROUTES = { '': 'home', '#/nagrody': 'rewards', '#/spotkanie': 'detect', '#/kolekcja': 'collection' };
-const HASH = { home: '', rewards: '#/nagrody', detect: '#/spotkanie', collection: '#/kolekcja' };
-const ORDER = { onboarding: 0, home: 0, rewards: 1, detect: 2, collection: 3 };
+const ROUTES = { '': 'home', '#/nagrody': 'rewards', '#/spotkanie': 'detect', '#/kolekcja': 'collection', '#/domek': 'house' };
+const HASH = { home: '', rewards: '#/nagrody', detect: '#/spotkanie', collection: '#/kolekcja', house: '#/domek' };
+const ORDER = { onboarding: 0, home: 0, house: 0, rewards: 1, detect: 2, collection: 3 };
 const routeFromHash = () => ROUTES[location.hash] || 'home';
 
 function render(next, animate = false) {
-  const prev = route;
+  const prev = route === 'house' ? 'home' : route;
   route = state ? next : 'onboarding';
   if (!root.querySelector('.app')) shell();
   const app = root.querySelector('.app');
+  // the house is a layer over the home screen (opened straight from #/domek: home first)
+  if (route === 'house' && !root.querySelector('.view')) { route = 'home'; render('home'); route = 'house'; return syncHouse(); }
+  syncHouse();
+  if (route === 'house') { settleHeader(); return; }
   app.dataset.route = route;
   const views = document.getElementById('views');
   const m = model();
@@ -419,7 +549,8 @@ function render(next, animate = false) {
   const stage = app.querySelector('.stage');
   stage.style.height = '';
   if (route === 'collection') requestAnimationFrame(() => { const w = v.querySelector('.coll-wrap'); if (w) stage.style.height = Math.max(stage.offsetHeight, w.offsetTop + w.offsetHeight) + 'px'; });
-  if (!overlay) pusz.mount(v.querySelector('.pusz'));
+  if (!overlay && route !== 'house') pusz.mount(v.querySelector('.pusz'));
+  settleHeader();
   settle(v, animate || !old.length);
   freshItem = '';
 }
@@ -607,21 +738,23 @@ function itemSheet(r, m) {
   const fx = justChanged?.id === r.id ? ` just-${justChanged.kind}` : '';
   const inSlot = r.slot ? m.outfit.map(id => BY_ID[id]).find(x => x?.slot === r.slot) : null;
   const previewOutfit = r.slot ? sanitizeOutfit([...m.outfit, r.id], Math.max(m.n, r.at), [...m.opened, r.hidden].filter(Boolean)) : m.outfit;
-  const stage = badge ? `<div class="ri-stage medal-stage${st === 'locked' ? ' locked' : ''}"><span class="ri-rays"></span><div class="ri-art">${badgeArt(r, 'big')}</div><span class="ri-shelf"></span></div>`
+  const stage = isHouse(r) ? `<div class="ri-stage house-stage${st === 'locked' ? ' locked' : ''}"><div class="ri-art">${houseArt(r.id, 150)}</div></div>`
+    : badge ? `<div class="ri-stage medal-stage${st === 'locked' ? ' locked' : ''}"><span class="ri-rays"></span><div class="ri-art">${badgeArt(r, 'big')}</div><span class="ri-shelf"></span></div>`
     : r.reveals ? `<div class="ri-stage gift-open"><span class="ri-rays"></span><div class="ri-art"><img src="/img/tile-gift.webp" alt=""${TILE_FILTER[r.id] ? ` style="filter:${TILE_FILTER[r.id]}"` : ''}></div></div>`
       : r.slot ? `<div class="ri-stage preview ${r.slot === 'theme' ? r.id : ''}"><img class="bg" src="/img/unlock-rewards.webp" alt=""><div class="ri-art">${puszystekHTML({ pose: 'home', box: [0, 0, 242], outfit: previewOutfit, label: 'Podgląd', stagePx: (x, y, w) => `left:calc(50% - ${dp(w / S * .38)});bottom:${dp(-4)};width:${dp(w / S * .76)}` })}</div></div>`
         : `<div class="ri-stage"><div class="ri-art">${artHTML(r)}</div></div>`;
   const have = Math.min(m.n, r.at);
   const cond = `<div class="cond ${m.n >= r.at ? 'met' : ''}"><span class="ck">${m.n >= r.at ? I.check : I.lock}</span><div><b>${meetings(r.at)} razem</b><small>${m.n >= r.at ? 'Warunek spełniony' : `Macie ${have} z ${r.at}, jeszcze ${meetings(r.at - m.n)}`}</small><div class="bar"><i style="width:${(have / r.at * 100).toFixed(1)}%"></i></div></div></div>`;
   // where the item is now (an elegant status, not a button)
-  const status = st === 'worn' ? `<div class="ri-status on">${r.slot === 'pin' ? I.pinIc : I.wear}<span>${r.slot === 'pin' ? 'Przypięta na liczniku' : set ? 'Ustawione przy Puszystku' : 'Puszystek ma to na sobie'}</span>${I.check}</div>`
-    : st === 'owned' ? `<div class="ri-status${badge ? ' case' : ''}">${badge ? I.shelf : I.check}<span>${badge ? 'W gablocie' : 'W waszym ekwipunku'}</span>${I.check}</div>` : '';
-  const verb = r.slot === 'pin' ? 'Przypnij na liczniku' : set ? 'Ustaw' : 'Załóż';
+  const house = isHouse(r);
+  const status = st === 'worn' ? `<div class="ri-status on">${r.slot === 'pin' ? I.pinIc : I.wear}<span>${house ? 'Stoi w domku Puszystka' : r.slot === 'pin' ? 'Przypięta na liczniku' : set ? 'Ustawione przy Puszystku' : 'Puszystek ma to na sobie'}</span>${I.check}</div>`
+    : st === 'owned' ? `<div class="ri-status${badge ? ' case' : ''}">${badge ? I.shelf : I.check}<span>${house ? 'W schowku — możesz ustawić w domku' : badge ? 'W gablocie' : 'W waszym ekwipunku'}</span>${I.check}</div>` : '';
+  const verb = house ? 'Ustaw w domku' : r.slot === 'pin' ? 'Przypnij na liczniku' : set ? 'Ustaw' : 'Załóż';
   const btns = st === 'locked' ? `<button class="btn-ghost wide" disabled aria-disabled="true">${I.lock}Zablokowane</button>`
     : st === 'ready' ? `<button class="btn-main" data-action="claim" data-id="${r.id}">${r.reveals ? 'Otwórz prezent' : badge ? 'Odbierz do gabloty' : 'Odbierz'} ${I.heart('', '#fff')}</button>`
       : r.reveals ? `<button class="btn-main" data-action="item" data-id="${r.reveals}">Zobacz zawartość ${I.heart('', '#fff')}</button>`
         : !r.slot ? ''
-          : st === 'worn' ? `<button class="btn-ghost wide" data-action="unequip" data-id="${r.id}">${r.slot === 'pin' ? 'Odepnij' : set ? 'Wyłącz' : 'Zdejmij'}</button>`
+          : st === 'worn' ? `<button class="btn-ghost wide" data-action="unequip" data-id="${r.id}">${house ? 'Schowaj' : r.slot === 'pin' ? 'Odepnij' : set ? 'Wyłącz' : 'Zdejmij'}</button>`
             : `${inSlot ? `<p class="swap-note">Zamiast: ${h(inSlot.name)}</p>` : ''}<button class="btn-main" data-action="equip" data-id="${r.id}">${inSlot && r.slot !== 'pin' ? 'Zamień' : verb} ${I.heart('', '#fff')}</button>`;
   return `<div class="ri ${st}${fx}" data-rar="${rar}">${stage}
     <div class="ri-head"><h2>${h(r.name)}</h2><p class="ri-meta"><span class="rar-chip"><i class="gem"></i>${RARITY[rar]}</span><span>${CATEGORIES[r.cat]}${r.slot && !badge ? `, ${SLOTS[r.slot].toLowerCase()}` : ''}</span></p></div>
@@ -670,10 +803,12 @@ function renderSheet(quiet = false) {
   const m = model();
   let c = '';
   if (sheet === 'settings') c = `<h2>Ustawienia</h2><p>Wszystko, czego potrzebujecie, w jednym miejscu.</p>
-    <div class="set"><div><b>Wasza para</b><small>${h(myName())} + ${h(otherName())}</small></div>${I.heart('emo')}</div>
+    <div class="set"><div><b>Wasza para</b><small>${h(myName())} ♡ ${state?.connected ? h(otherName()) : 'czeka na drugą osobę'}</small></div>${I.heart('emo')}</div>
+    <div class="set"><div><b>Twoje imię</b><small>Widzicie je oboje w nagłówku.</small></div><button class="btn-soft" data-action="name">${h(myName())}</button></div>
+    <div class="set"><div><b>Status wykrywania spotkań</b><small>${h(statusLine(m))}</small></div><button class="btn-soft" data-action="diag">Pokaż</button></div>
     <div class="set"><div><b>Wspólny ekwipunek${m?.ready.length ? `<span class="dot">${m.ready.length}</span>` : ''}</b><small>${m ? `${m.claimed.length} w ekwipunku · wspólny dla was obojga` : ''}</small></div><button class="btn-soft" data-action="collection">Otwórz</button></div>
     <div class="set"><div><b>Data pierwszego spotkania</b><small>Od niej liczymy dni razem.</small></div><button class="btn-soft" data-action="first-date">${h(state?.firstMetAt || 'Ustaw')}</button></div>
-    <div class="set"><div><b>Zasięg spotkania</b><small>Odległość, przy której jesteście „razem”.</small></div><button class="btn-soft" data-action="radius">${m?.pr.radius || 150} m</button></div>
+    <div class="set"><div><b>Zasięg spotkania</b><small>Przy słabszym GPS: do tej odległości potwierdzacie oboje.</small></div><button class="btn-soft" data-action="radius">${m?.pr.radius || 100} m</button></div>
     <div class="set"><div><b>Zapisz spotkanie</b><small>Dodajcie spotkanie ręcznie.</small></div><button class="btn-soft" data-action="meeting">Dodaj</button></div>
     ${state && !state.connected ? `<div class="set"><div><b>Kod zaproszenia</b><small>Druga osoba wybiera „Dołącz z kodem”.</small><div class="code">${h(state.code || '')}</div></div><button class="btn-soft" data-action="copy">Kopiuj</button></div>` : ''}
     <div class="set"><div><b>Logowanie na innym telefonie</b><small>Jednorazowo pokażemy Twój kod logowania.</small></div><button class="btn-soft" data-action="login-code">Pokaż kod</button></div>
@@ -686,19 +821,26 @@ function renderSheet(quiet = false) {
     <form id="date-form"><label class="field-l" for="startdate">Data</label><input class="field" id="startdate" required type="date" max="${new Date().toISOString().slice(0, 10)}" value="${h(state?.firstMetAt || '')}"><button type="submit" class="btn-main">Zapisz datę ${I.heart('', '#fff')}</button></form>`;
   else if (sheet === 'meeting') c = `<h2>Zapisać spotkanie?</h2><p>Licznik jest wspólny — druga osoba od razu zobaczy nowe spotkanie.</p>
     <form id="meeting-form"><label class="field-l" for="mdate">Kiedy?</label><input class="field" id="mdate" type="date" max="${new Date().toISOString().slice(0, 10)}" value="${new Date().toISOString().slice(0, 10)}"><button type="submit" class="btn-main">Zapisz spotkanie ${I.heart('', '#fff')}</button></form>`;
-  else if (sheet === 'location-info') c = `<h2>Auto-zliczanie</h2><p>Gdy oboje włączycie lokalizację i macie otwartą aplikację, sprawdzamy, czy jesteście blisko siebie (zasięg: ${m?.pr.radius || 150} m).</p>
-    <p>Liczą się tylko świeże (do 3 minut) i dokładne pomiary. Po minucie bliskości możecie potwierdzić spotkanie, a po 10 minutach zapisze się samo. Jedno spotkanie na jedno bycie razem — kolejne dopiero, gdy byliście osobno przez 30 minut.</p>
-    <p><b>Ważne:</b> PWA na iPhonie nie lokalizuje w tle — obie osoby muszą mieć Razem otwarte. Zawsze możecie dotknąć licznika i zapisać spotkanie ręcznie.</p>
-    <div class="row-btns"><button class="btn-soft" data-action="replay">Podgląd animacji</button><button class="btn-main" data-action="toggle-location">${geoEnabled ? 'Wyłącz lokalizację' : 'Włącz lokalizację'}</button></div>`;
+  else if (sheet === 'location-info') c = `<h2>Auto-zliczanie</h2><p>Gdy oboje włączycie lokalizację i macie otwarte Razem, telefony co kilkanaście sekund porównują swoje pozycje. Do 300 m: „jesteście niedaleko”. Do 50 m przy dokładnym GPS: jesteście razem, a po minucie spotkanie zapisuje się samo. Przy słabszym GPS (do ${m?.pr.radius || 100} m) potwierdzacie je oboje.</p>
+    <p>Liczą się tylko pomiary z ostatnich 2 minut. Jedno bycie razem to jedno spotkanie, kolejne najwcześniej po 6 godzinach. Pozycja jest kasowana po 15 minutach — nie ma historii tras.</p>
+    <p><b>Ważne:</b> na iPhonie strona nie może sprawdzać lokalizacji w tle. Obie osoby muszą mieć Razem otwarte; gdy jedna sprawdza, druga dostaje powiadomienie (jeśli je włączyła).</p>
+    <div class="row-btns"><button class="btn-soft" data-action="replay">Podgląd animacji</button><button class="btn-main" data-action="${geoOn ? 'check-now' : 'toggle-location'}">${geoOn ? 'Sprawdź teraz' : 'Włącz lokalizację'}</button></div>`;
   else if (sheet === 'radius') c = `<h2>Zasięg spotkania</h2><p>Jak blisko musicie być, żeby Razem uznało, że jesteście razem? Mniejszy zasięg wymaga dokładniejszego GPS.</p>
-    <div class="radius-opts">${[100, 150, 300, 500].map(v => `<button aria-pressed="${(m?.pr.radius || 150) === v}" data-action="set-radius" data-r="${v}">${v} m</button>`).join('')}</div>
-    <p>Wspólne ustawienie dla was obojga. Dokładność pomiaru musi być nie gorsza niż zasięg (maks. 150 m).</p>`;
-  else if (sheet === 'nearby') c = `<h2>Jesteście blisko!</h2><p>${h(myName())} i ${h(otherName())} — ok. ${fmtDist(m.pr.distance)} od siebie. Zaczynamy wspólne spotkanie?</p>
-    <div class="row-btns"><button class="btn-soft" data-action="close">Nie teraz</button><button class="btn-main" data-action="confirm-meeting">Zaczynamy ${I.heart('', '#fff')}</button></div>`;
+    <div class="radius-opts three">${[50, 100, 150].map(v => `<button aria-pressed="${(m?.pr.radius || 100) === v}" data-action="set-radius" data-r="${v}">${v} m</button>`).join('')}</div>
+    <p>Do 50 m przy dokładnym GPS spotkanie liczy się samo. Do wybranej odległości, gdy GPS jest mniej dokładny, potwierdzacie je oboje. Wspólne ustawienie dla was obojga.</p>`;
+  else if (sheet === 'nearby') c = `<h2>${m.pr.partnerConfirm ? `${h(otherName())} potwierdza spotkanie` : 'Wygląda na to, że jesteście razem!'}</h2><p>${h(myName())} i ${h(otherName())}: ok. ${fmtDist(m.pr.distance)} od siebie. ${m.pr.partnerConfirm ? 'Potwierdzasz, że jesteście razem?' : m.pr.needsBoth ? 'GPS jest mniej dokładny, więc potwierdźcie spotkanie oboje.' : 'Zaliczamy spotkanie?'}</p>
+    <div class="row-btns"><button class="btn-soft" data-action="close">Nie teraz</button><button class="btn-main" data-action="confirm-meeting">${m.pr.myConfirm ? 'Potwierdzone' : 'Jesteśmy razem'} ${I.heart('', '#fff')}</button></div>`;
+  else if (sheet === 'check') c = checkSheet(m);
+  else if (sheet === 'diag') c = diagSheet(m);
+  else if (sheet === 'name') c = `<h2>Twoje imię</h2><p>Zobaczycie je oboje w nagłówku aplikacji.</p>
+    <form id="name-form"><label class="field-l" for="myname">Imię</label><input class="field" id="myname" maxlength="28" minlength="2" required autocomplete="given-name" value="${h(myName())}"><button type="submit" class="btn-main">Zapisz ${I.heart('', '#fff')}</button></form>`;
+  else if (sheet === 'push-help') c = `<h2>Powiadomienia na iPhonie</h2><p>iOS pozwala na powiadomienia tylko aplikacjom dodanym do ekranu początkowego (iOS 16.4 lub nowszy).</p>
+    <p>W Safari dotknij <b>Udostępnij</b> → <b>Do ekranu początkowego</b>, otwórz Razem z ikony Puszystka i włącz powiadomienia jeszcze raz.</p><button class="btn-main" data-action="close">Rozumiem ${I.heart('', '#fff')}</button>`;
   else if (sheet === 'login') c = `<h2>Twój kod logowania</h2><p>Na nowym telefonie wybierz „Zaloguj się kodem” i wpisz:</p>
     <div class="login-code">${h(loginCode.replace(/(.{4})(?=.)/g, '$1 '))}</div>
     <p>Kod jest tylko Twój — nie wysyłaj go nikomu. Wygenerowanie nowego unieważnia poprzedni.</p>
     <button class="btn-main" data-action="copy-login">Kopiuj kod ${I.heart('', '#fff')}</button>`;
+  else if (sheet.startsWith('hslot:')) c = slotSheet(sheet.slice(6), m);
   else if (sheet.startsWith('item:')) c = itemSheet(BY_ID[sheet.slice(5)], m);
   const prevScroll = document.querySelector('#sheet .sheet-body')?.scrollTop || 0;
   document.getElementById('sheet')?.remove();
@@ -765,9 +907,18 @@ async function act(action, el) {
     else if (action === 'detect') go('detect');
     else if (action === 'collection') { closeSheet(); go('collection'); }
     else if (action === 'mode-create' || action === 'mode-join' || action === 'mode-restore') { mode = action.split('-')[1]; render('onboarding'); }
-    else if (['settings', 'history', 'first-date', 'location-info', 'meeting', 'radius'].includes(action)) { if (!state && action !== 'location-info') return; openSheet(action); }
+    else if (['settings', 'history', 'first-date', 'location-info', 'meeting', 'radius', 'diag', 'name'].includes(action)) { if (!state && action !== 'location-info') return; openSheet(action); }
+    else if (action === 'check-now') await checkNow();
+    else if (action === 'house') {
+      const r = el.getBoundingClientRect(); houseOrigin = [r.left + r.width / 2, r.top + r.height / 2];
+      if (!reduced.matches && pusz.el?.querySelector('.pz-paw')) { pusz.play('wave'); await new Promise(res => setTimeout(res, 650)); }
+      go('house');
+    }
+    else if (action === 'house-back') go('home');
+    else if (action === 'house-edit') { houseEditing = !houseEditing; syncHouse(); if (houseEditing) toast('Dotknij miejsca w pokoju, żeby coś ustawić ♡'); }
+    else if (action === 'house-slot') openSheet('hslot:' + el.dataset.slot);
     else if (action === 'close') closeSheet();
-    else if (action === 'cat') { const pick = await pusz.tap(); if (pick === 'hop' || pick === 'hug') burst(el, 4, 120); }
+    else if (action === 'cat') { if (route === 'house') life.stop(); const pick = await pusz.tap(); if (pick === 'hop' || pick === 'hug') burst(el, 4, 120); if (route === 'house') life.timer = setTimeout(() => life.next(), 5000); }
     else if (action === 'super') { burst(document.querySelector('.view:not(.leave) .pz-body'), 9); pusz.celebrate('reward'); el.animate?.([{ transform: 'scale(1)' }, { transform: 'scale(1.08)' }, { transform: 'scale(1)' }], { duration: 400, easing: 'ease-out' }); }
     else if (action === 'item') { openSheet('item:' + el.dataset.id); }
     else if (action === 'equip' || action === 'unequip' || action === 'ov-wear') {
@@ -817,40 +968,43 @@ async function act(action, el) {
     }
     else if (action === 'replay') { if (el.closest('.near-cta')) return; showCelebration({ n: state.count, preview: true }); }
     else if (action === 'ov-next') { if (overlay?.queue.length) nextReward(); else closeOverlay(); }
-    else if (action === 'ov-collection') { overlay && (overlay.queue = []); closeOverlay(); go('collection'); }
-    else if (action === 'locate') { const g = document.querySelector('.view:not(.leave) .chips'); g?.animate?.([{ transform: 'scale(1)' }, { transform: 'scale(1.15)' }, { transform: 'scale(1)' }], { duration: 500, easing: 'cubic-bezier(.34,1.56,.64,1)' }); if (geoEnabled) sendNow(); }
+    else if (action === 'ov-collection') { const toHouse = isHouse(BY_ID[el.closest('.ov-reward')?.querySelector('[data-id]')?.dataset.id]); overlay && (overlay.queue = []); closeOverlay(); go(toHouse ? 'house' : 'collection'); }
+    else if (action === 'locate') { const g = document.querySelector('.view:not(.leave) .chips'); g?.animate?.([{ transform: 'scale(1)' }, { transform: 'scale(1.15)' }, { transform: 'scale(1)' }], { duration: 500, easing: 'cubic-bezier(.34,1.56,.64,1)' }); if (!DEMO) await checkNow(); }
     else if (action === 'set-radius') {
       const r = +el.dataset.r;
       if (DEMO) { state.proximity.radius = r; } else state = await request('/api/settings', { radius: r });
       renderSheet(); render(route); toast(`Zasięg: ${r} m`);
     }
     else if (action === 'confirm-meeting') {
+      if (DEMO) throw new Error('To tylko podgląd — nic nie zapisujemy ♡');
       const old = state.count;
-      state = await request('/api/meeting-confirm', {});
-      saveState(); closeSheet(); render(route); afterCountChange(old);
+      const res = await request('/api/meeting-confirm', {});
+      state = res; saveState(); closeSheet(); render(route);
+      if (res.waitingForPartner) toast(`Potwierdzone ♥ Czekamy jeszcze na ${h(otherName())}`);
+      else afterCountChange(old);
     }
     else if (action === 'copy') { await navigator.clipboard.writeText(state.code); toast('Kod zaproszenia skopiowany ♡'); }
     else if (action === 'delete') { if (!confirm('Usunąć to spotkanie z waszego licznika?')) return; state = await request('/api/delete-meeting', { id: el.dataset.id }); render(route); renderSheet(); toast('Spotkanie usunięte'); }
     else if (action === 'toggle-location') {
       if (DEMO) { el.setAttribute?.('aria-checked', String(el.getAttribute('aria-checked') !== 'true')); toast('To tylko podgląd — lokalizacja nie jest używana'); return; }
-      if (geoEnabled) { stopGeo(); toast('Lokalizacja wyłączona'); } else await startGeo();
-      closeSheet(); render(route);
+      if (geoOn) { await disableGeo(); toast('Lokalizacja wyłączona — pozycja usunięta'); } else { await enableGeo(); toast('Wykrywanie działa, gdy Razem jest otwarte ♡'); }
+      if (sheet !== 'diag') closeSheet(); else renderSheet(true);
+      render(route);
     }
     else if (action === 'toggle-notify') {
-      const on = el.getAttribute('aria-checked') !== 'true';
-      if (on && !DEMO && 'Notification' in window && Notification.permission !== 'granted') { const p = await Notification.requestPermission(); if (p !== 'granted') { toast('Brak zgody na powiadomienia'); return; } }
-      notifyOn = on; if (!DEMO) setPref('notify', on); el.setAttribute('aria-checked', String(on));
+      if (DEMO) { toast('To tylko podgląd'); return; }
+      await togglePush(!state?.push?.subscribed); render(route); if (sheet === 'diag') renderSheet(true);
     }
     else if (action === 'toggle-sync') { syncOn = el.getAttribute('aria-checked') !== 'true'; if (!DEMO) setPref('sync', syncOn); el.setAttribute('aria-checked', String(syncOn)); if (syncOn) refresh(); }
     else if (action === 'logout') {
       if (!confirm('Odłączyć ten telefon? Wrócisz do pary tylko z kodem logowania (Ustawienia → Pokaż kod). Wasze dane zostają na serwerze.')) return;
-      stopGeo(); signOut(); closeSheet(); render('onboarding');
+      await disableGeo().catch(() => { }); signOut(); closeSheet(); render('onboarding');
     }
   } catch (err) { toast(h(err.message)); }
 }
 
 root.addEventListener('click', e => { const b = e.target.closest('[data-action]'); if (b) { e.stopPropagation(); act(b.dataset.action, b); } });
-document.addEventListener('click', e => { if (!e.target.closest('#sheet, #ov')) return; const b = e.target.closest('[data-action]'); if (b) act(b.dataset.action, b); });
+document.addEventListener('click', e => { if (!e.target.closest('#sheet, #ov, #house')) return; const b = e.target.closest('[data-action]'); if (b) act(b.dataset.action, b); });
 document.addEventListener('submit', async e => {
   e.preventDefault(); const form = e.target; if (working) return; working = true;
   const btn = form.querySelector('[type=submit]'); if (btn) btn.disabled = true;
@@ -861,6 +1015,8 @@ document.addEventListener('submit', async e => {
       const res = mode === 'create' ? await request('/api/create', { name }) : mode === 'join' ? await request('/api/join', { name, code: form.querySelector('#code').value }) : await request('/api/restore', { code: form.querySelector('#code').value });
       token = res.token; localStorage.setItem(cacheKey, token); state = null;
       await refresh(); toast(mode === 'create' ? 'Wasz świat jest gotowy ♥' : mode === 'join' ? 'Jesteście połączeni! ♥' : 'Witaj z powrotem! ♥');
+    } else if (form.id === 'name-form') {
+      state = await request('/api/name', { name: form.querySelector('#myname').value.trim() }); saveState(); closeSheet(); render(route); toast('Imię zapisane ♥');
     } else if (form.id === 'date-form') {
       state = await request('/api/first-date', { date: form.querySelector('#startdate').value }); closeSheet(); render(route); toast('Data zapisana ♥');
     } else if (form.id === 'meeting-form') {
@@ -876,7 +1032,7 @@ document.addEventListener('submit', async e => {
 function afterCountChange(old) {
   const c = document.querySelector('.view:not(.leave) .count');
   if (c && !reduced.matches) { countUp(c, old, state.count, 700); c.classList.add('pop'); setTimeout(() => c.classList.remove('pop'), 700); }
-  if (state.count > old) { showCelebration({ n: state.count, rewards: newRewards() }); notify('Jesteście razem!', `Wasze ${state.count}. spotkanie ♥`); }
+  if (state.count > old) showCelebration({ n: state.count, rewards: newRewards() });
   else newRewards();
 }
 
@@ -893,7 +1049,10 @@ async function refresh() {
     const next = await request('/api/state');
     // the first answer after painting the cached state counts as the initial load
     const old = cached ? undefined : state?.count, oldVersion = cached ? undefined : state?.rewards?.version;
-    if (state && !cached && JSON.stringify(next) === JSON.stringify(state)) return;
+    // the partner's phone asked for a fresh reading ("Sprawdź"): answer right away
+    if (next.proximity?.pingAt && next.proximity.pingAt > handledPing) { handledPing = next.proximity.pingAt; freshSend(); }
+    // only the readings' ages changed: keep them, no re-render
+    if (state && !cached && sig(next) === sig(state)) { state = next; if (sheet === 'diag') renderSheet(true); return; }
     state = next; cached = false; saveState();
     // the partner changed the shared inventory: show it and let Puszystek react
     const ch = next.rewards?.lastChange;
@@ -905,45 +1064,158 @@ async function refresh() {
     if (old === undefined) newRewards();
     else if (next.count !== old) afterCountChange(old);
     else { const fresh = newRewards(); if (fresh.length) showRewards(fresh); }
-    // proximity: offer to start the meeting once per proximity session
-    const p = next.proximity;
-    if (p?.canConfirm && promptedSession !== p.since && !overlay && !sheet) { promptedSession = p.since; openSheet('nearby'); }
+    promptMeeting();
   } catch (err) {
-    if (err.status === 401) { signOut(); stopGeo(); render('onboarding'); }
+    if (err.status === 401) { signOut(); stopWatch(); render('onboarding'); }
     else console.warn('Synchronizacja:', err.message);
   } finally { syncing = false; }
 }
-function notify(title, body) { try { if (notifyOn && document.hidden && 'Notification' in window && Notification.permission === 'granted') new Notification(title, { body, icon: '/icon-192.png' }); } catch { } }
 
 // ------------------------------------------------------------------ geolocation
-// Positions are sent every 30 s while the app is visible; the server decides
-// proximity from fresh, accurate readings of both phones.
-async function startGeo() {
+// Sharing is opt-in per person and remembered on this phone. While Razem is
+// visible the phone watches its position and reports a reading every ~15 s
+// (each with the time it was measured); hidden, everything stops: iOS gives
+// web apps no background location. The server decides; coordinates are kept
+// there for 15 minutes at most.
+let geoOn = !DEMO && pref('geo', false), watchId = null, keepAlive = null, lastFix = null, lastSent = 0, sentFixTs = 0, geoError = '', handledPing = Date.now();
+const GEO = { enableHighAccuracy: true, maximumAge: 10000, timeout: 20000 };
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const sig = s => JSON.stringify({ ...s, proximity: s.proximity && { ...s.proximity, me: { ...s.proximity.me, age: 0 }, partner: { ...s.proximity.partner, age: 0 }, held: 0 } });
+const fix = (opts = {}) => new Promise((res, rej) => navigator.geolocation.getCurrentPosition(res, rej, { ...GEO, maximumAge: 0, timeout: 15000, ...opts }));
+const geoErr = e => e?.code === 1 ? 'denied' : e?.code === 2 ? 'unavailable' : 'timeout';
+const GEO_TEXT = { denied: 'Brak zgody na lokalizację. Na iPhonie: Ustawienia → Prywatność → Usługi lokalizacji → Razem/Safari → „Podczas używania”.', unavailable: 'Telefon nie może teraz ustalić pozycji. Sprawdź, czy usługi lokalizacji są włączone.', timeout: 'GPS odpowiada zbyt wolno. Spróbuj bliżej okna albo na zewnątrz.' };
+// a fresh reading; if GPS is slow (indoors), the last one still counts when it is under a minute old
+async function freshFix() {
+  try { lastFix = await fix({ timeout: 12000 }); geoError = ''; return lastFix; }
+  catch (e) { if (e?.code !== 1 && lastFix && Date.now() - lastFix.timestamp < 60000) return lastFix; geoError = geoErr(e); const err = new Error(GEO_TEXT[geoError]); err.geo = geoError; throw err; }
+}
+function onFix(pos) { lastFix = pos; if (geoError) { geoError = ''; render(route); } send(); }
+function onGeoError(e) {
+  const was = geoError; geoError = geoErr(e);
+  if (geoError === 'denied') stopWatch();
+  if (was !== geoError) { render(route); if (sheet === 'diag' || sheet === 'check') renderSheet(true); }
+}
+function startWatch() {
+  if (!geoOn || DEMO || !token || watchId !== null || !navigator.geolocation || document.visibilityState !== 'visible') return;
+  watchId = navigator.geolocation.watchPosition(onFix, onGeoError, GEO);
+  // standing still, iOS may stay quiet: ask for a fresh reading when the last one gets old
+  keepAlive = setInterval(() => { if (!lastFix || Date.now() - lastFix.timestamp > 14000) navigator.geolocation.getCurrentPosition(onFix, onGeoError, { ...GEO, maximumAge: 0 }); else send(); }, 15000);
+}
+function stopWatch() { if (watchId !== null) navigator.geolocation.clearWatch(watchId); watchId = null; clearInterval(keepAlive); keepAlive = null; }
+// report the last reading (throttled): every new reading after 10 s, or when forced
+async function send(path = '/api/location', force = false) {
+  if (!lastFix || !token || DEMO || !state) return;
+  const now = Date.now();
+  if (now - lastFix.timestamp > 110000) return; // too old to prove anything
+  if (!force && (lastFix.timestamp === sentFixTs || now - lastSent < 10000)) return;
+  sentFixTs = lastFix.timestamp; lastSent = now;
+  const c = lastFix.coords, old = state.count, oldStage = state.proximity?.stage + state.proximity?.reason;
+  try {
+    const next = await request(path, { lat: c.latitude, lon: c.longitude, accuracy: c.accuracy, ts: lastFix.timestamp });
+    state = next; saveState();
+    if (next.count !== old) { render(route); afterCountChange(old); }
+    else if (next.proximity?.stage + next.proximity?.reason !== oldStage && !overlay) { render(route); if (sheet === 'diag' || sheet === 'check') renderSheet(true); }
+    promptMeeting();
+  } catch (e) { console.warn('Lokalizacja:', e.message); }
+}
+// a fresh reading now (after a ping from the partner's phone, or coming back to the app)
+async function freshSend(path = '/api/location') {
+  if (!geoOn || DEMO || !navigator.geolocation) return;
+  try { await freshFix(); await send(path, true); } catch (e) { if (e.geo) { render(route); if (sheet === 'diag') renderSheet(true); } }
+}
+async function enableGeo() {
   if (!navigator.geolocation) throw new Error('Ta przeglądarka nie udostępnia lokalizacji.');
-  await new Promise((resolve, reject) => navigator.geolocation.getCurrentPosition(async pos => { try { await sendGeo(pos); resolve(); } catch (err) { reject(err); } }, () => reject(new Error('Brak zgody na lokalizację. Sprawdź ustawienia telefonu.')), { enableHighAccuracy: true, maximumAge: 15000, timeout: 15000 }));
-  geoEnabled = true;
-  locTimer = setInterval(sendNow, 30000);
-  toast('Wykrywanie jest aktywne, gdy aplikacja jest otwarta ♡');
+  try { lastFix = await fix({ timeout: 20000 }); } catch (e) { geoError = geoErr(e); throw new Error(GEO_TEXT[geoError]); }
+  geoOn = true; geoError = ''; setPref('geo', true);
+  await send('/api/location', true); startWatch();
 }
-function sendNow() { if (document.visibilityState !== 'visible' || !geoEnabled) return; navigator.geolocation.getCurrentPosition(pos => sendGeo(pos).catch(() => { }), () => { }, { enableHighAccuracy: true, maximumAge: 20000, timeout: 12000 }); }
-async function sendGeo(pos) {
-  const c = pos.coords; if (!c || c.accuracy > 1500) return;
-  const old = state.count, oldP = JSON.stringify(state.proximity);
-  const next = await request('/api/location', { lat: c.latitude, lon: c.longitude, accuracy: c.accuracy });
-  state = next;
-  if (next.count !== old) { render(route); afterCountChange(old); }
-  else if (JSON.stringify(next.proximity) !== oldP && !sheet && !overlay) render(route);
-  const p = next.proximity;
-  if (p?.canConfirm && promptedSession !== p.since && !overlay && !sheet) { promptedSession = p.since; openSheet('nearby'); }
+async function disableGeo() {
+  geoOn = false; setPref('geo', false); stopWatch(); lastFix = null;
+  if (token && !DEMO) { state = await request('/api/location-off', {}); saveState(); }
 }
-function stopGeo() { geoEnabled = false; clearInterval(locTimer); locTimer = null; if (token && !DEMO) request('/api/location-off', {}).catch(() => { }); }
+// Offer "Jesteśmy razem" once per proximity session (and again when the partner confirmed).
+function promptMeeting() {
+  const p = state?.proximity; if (!p || overlay || (sheet && sheet !== 'check')) return;
+  if (p.stage !== 'together' || p.myConfirm) return;
+  const key = `${p.since}:${p.partnerConfirm ? 'p' : ''}`;
+  if (promptedSession === key) return;
+  promptedSession = key; openSheet('nearby');
+}
+
+// "Sprawdź, czy jesteśmy razem": a fresh reading here, a ping to the other
+// phone, up to ~20 s waiting for its answer, then a clear result.
+let checkRun = null;
+async function checkNow() {
+  if (DEMO) return toast('To tylko podgląd — lokalizacja nie jest używana');
+  if (!state?.connected) return toast('Najpierw połączcie się kodem.');
+  checkRun = { phase: 'me' }; openSheet('check');
+  try {
+    if (!geoOn) await enableGeo();
+    await freshFix();
+    checkRun.phase = 'partner'; if (sheet === 'check') renderSheet(true);
+    await send('/api/check', true);
+    for (let i = 0; i < 8 && state.proximity?.stage === 'waiting' && sheet === 'check'; i++) { await sleep(2500); syncing = false; await refresh(); }
+  } catch (e) { checkRun.error = e.message || 'Nie udało się sprawdzić.'; }
+  checkRun.phase = 'done';
+  if (sheet === 'check') renderSheet(true);
+}
+const ago = ms => ms == null ? '—' : ms < 60000 ? `${Math.max(1, Math.round(ms / 1000))} s temu` : ms < 3600000 ? `${Math.round(ms / 60000)} min temu` : 'dawno';
+function checkSheet(m) {
+  const p = m.pr || {};
+  if (checkRun?.phase === 'me' || checkRun?.phase === 'partner') return `<div class="chk"><div class="chk-spin" aria-hidden="true">${I.heart('', 'url(#hg2)')}</div><h2>Sprawdzamy, czy jesteście razem…</h2><p>${checkRun.phase === 'me' ? 'Pobieramy lokalizację tego telefonu.' : `Pytamy telefon ${h(otherName())}…`}</p></div>`;
+  if (checkRun?.error) return `<div class="chk"><h2>Nie udało się sprawdzić</h2><p>${h(checkRun.error)}</p><div class="row-btns"><button class="btn-soft" data-action="close">Zamknij</button><button class="btn-main" data-action="check-now">Spróbuj ponownie</button></div></div>`;
+  const title = p.stage === 'together' ? 'Wygląda na to, że jesteście razem!' : p.stage === 'recorded' ? 'Jesteście razem ♥' : p.stage === 'near' ? 'Jesteście niedaleko siebie!' : p.stage === 'far' ? 'Jeszcze nie razem' : 'Nie da się tego teraz sprawdzić';
+  const btn = p.stage === 'together' ? `<button class="btn-main" data-action="confirm-meeting">${p.needsBoth ? 'Potwierdzam, jesteśmy razem' : 'Zaliczamy spotkanie'} ${I.heart('', '#fff')}</button>`
+    : `<div class="row-btns"><button class="btn-soft" data-action="close">Zamknij</button><button class="btn-main" data-action="check-now">Sprawdź ponownie</button></div>`;
+  return `<div class="chk done ${p.stage}"><div class="chk-ic" aria-hidden="true">${I.heart('', p.stage === 'together' || p.stage === 'recorded' ? 'url(#hg2)' : 'url(#hg3)')}</div><h2>${title}</h2><p>${reasonText(p)}</p>${p.distance != null ? `<p class="chk-meta">Odległość ok. ${fmtDist(p.distance)} · dokładność ±${p.me?.acc} m / ±${p.partner?.acc} m</p>` : ''}${btn}</div>`;
+}
+function statusLine(m) {
+  const p = m?.pr || {};
+  if (!state?.connected) return 'Czekamy na drugą osobę';
+  if (!geoOn) return 'Lokalizacja na tym telefonie wyłączona';
+  if (geoError === 'denied') return 'Brak zgody na lokalizację';
+  return reasonText(p).split('.')[0];
+}
+// "Status wykrywania spotkań": what works, what does not and why — no raw logs, no coordinates
+function diagSheet(m) {
+  const p = m.pr || {}, P = h(otherName());
+  const row = (ok, label, value, extra = '') => `<div class="dg"><i class="dot ${ok}"></i><div><b>${label}</b><small>${value}</small></div>${extra}</div>`;
+  const accTxt = a => a == null ? 'brak pomiaru' : a <= 50 ? `±${a} m — bardzo dobra` : a <= 100 ? `±${a} m — wystarczy z potwierdzeniem` : `±${a} m — za słaba`;
+  const standalone = matchMedia('(display-mode: standalone)').matches || navigator.standalone;
+  return `<h2>Status wykrywania spotkań</h2><p>Na żywo, na podstawie ostatnich pomiarów obu telefonów.</p>
+    ${row(state?.connected ? 'ok' : 'off', 'Para', state?.connected ? `${h(myName())} ♡ ${P} — połączeni` : 'Czekamy, aż druga osoba dołączy kodem')}
+    ${row(geoOn && !geoError ? 'ok' : geoOn ? 'warn' : 'off', 'Lokalizacja na tym telefonie', geoError === 'denied' ? 'Brak zgody w ustawieniach iOS' : geoOn ? (geoError ? 'Włączona, ale brak pomiaru GPS' : 'Włączona — wysyłana, gdy Razem jest otwarte') : 'Wyłączona', `<button class="btn-soft sm" data-action="toggle-location">${geoOn ? 'Wyłącz' : 'Włącz'}</button>`)}
+    ${row(p.me?.age != null && p.me.age < 120000 ? 'ok' : 'off', 'Ostatnia pozycja tego telefonu', p.me?.age != null ? `${ago(p.me.age)} · ${accTxt(p.me.acc)}` : 'jeszcze nie wysłano')}
+    ${row(p.partner?.on && p.partner.age != null && p.partner.age < 120000 ? 'ok' : p.partner?.on ? 'warn' : 'off', `Lokalizacja: ${P}`, !state?.connected ? '—' : !p.partner?.on ? 'nie udostępnia' : p.partner.age != null ? `${ago(p.partner.age)} · ${accTxt(p.partner.acc)}` : 'brak świeżego pomiaru')}
+    ${row(p.stage === 'together' ? 'ok' : p.stage === 'recorded' ? 'ok' : 'off', 'Weryfikacja bliskości', p.stage === 'together' ? `trwa${p.held ? ` od ${Math.round(p.held / 1000)} s` : ''}${p.needsBoth ? ' · potrzebne potwierdzenie obojga' : ''}` : p.stage === 'recorded' ? 'spotkanie zaliczone' : p.distance != null ? `odległość ok. ${fmtDist(p.distance)}` : 'nie trwa')}
+    ${row(['together', 'recorded'].includes(p.stage) ? 'ok' : 'warn', 'Dlaczego nie zaliczono', reasonText(p))}
+    ${row(state?.push?.subscribed ? 'ok' : 'off', 'Powiadomienia', state?.push?.subscribed ? 'włączone na tym telefonie' : !state?.push?.available ? 'niedostępne na serwerze' : !standalone && /iPhone|iPad/.test(navigator.userAgent) ? 'na iPhonie: dodaj Razem do ekranu początkowego' : 'wyłączone', `<button class="btn-soft sm" data-action="toggle-notify">${state?.push?.subscribed ? 'Wyłącz' : 'Włącz'}</button>`)}
+    <button class="btn-main" data-action="check-now">Sprawdź, czy jesteśmy razem ${I.heart('', '#fff')}</button>`;
+}
+// ------------------------------------------------------------------ Web Push
+const fromB64u = s => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((s.length + 3) % 4)), c => c.charCodeAt(0));
+async function togglePush(on) {
+  const standalone = matchMedia('(display-mode: standalone)').matches || navigator.standalone;
+  if (!on) {
+    const reg = await navigator.serviceWorker?.ready; const s = await reg?.pushManager?.getSubscription(); await s?.unsubscribe();
+    state = await request('/api/push-unsubscribe', {}); return toast('Powiadomienia wyłączone');
+  }
+  if (!('serviceWorker' in navigator) || !('PushManager' in window)) { if (/iPhone|iPad/.test(navigator.userAgent) && !standalone) return openSheet('push-help'); return toast('Ta przeglądarka nie obsługuje powiadomień push.'); }
+  if (!state?.push?.available) return toast('Powiadomienia nie są jeszcze dostępne.');
+  if (await Notification.requestPermission() !== 'granted') return toast('Brak zgody na powiadomienia');
+  const reg = await navigator.serviceWorker.ready;
+  const sub = await reg.pushManager.getSubscription() || await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: fromB64u(state.push.key) });
+  state = await request('/api/push-subscribe', { ...sub.toJSON(), test: true });
+  toast('Powiadomienia włączone ♥');
+}
 
 window.addEventListener('hashchange', () => { if (state) render(routeFromHash(), true); });
 window.addEventListener('popstate', () => { if (state && !location.hash) render('home', true); });
-document.addEventListener('keydown', e => { if (e.key === 'Escape') { if (overlay) closeOverlay(); else if (sheet) closeSheet(); } });
+document.addEventListener('keydown', e => { if (e.key === 'Escape') { if (overlay) closeOverlay(); else if (sheet) closeSheet(); else if (route === 'house') go('home'); } });
 // back to the app (unlock, app switcher, tab, network): sync right away
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible' && token && syncOn) { refresh(); sendNow(); }
+  if (document.visibilityState === 'visible') { if (token && syncOn) refresh(); startWatch(); freshSend(); }
+  else stopWatch();
 });
 ['focus', 'pageshow', 'online'].forEach(e => addEventListener(e, () => { if (token && syncOn && document.visibilityState === 'visible') refresh(); }));
 // no accidental pinch/double-tap zoom of the app shell (iOS ignores user-scalable=no)
@@ -954,6 +1226,8 @@ document.addEventListener('visibilitychange', () => {
   // paint the last known state at once, then ask the server
   if (token && !DEMO) try { const c = JSON.parse(localStorage.getItem(stateKey)); if (c?.rewards) { state = c; cached = true; render(routeFromHash()); } } catch { }
   await refresh();
+  // location sharing was switched on earlier on this phone: resume it
+  if (geoOn && token) { startWatch(); freshSend(); }
   // demo: ?celebrate=1[&reward=id] plays the meeting animation as a preview
   if (DEMO && params.has('celebrate')) showCelebration({ n: state.count, preview: true, rewards: (params.get('reward') || '').split(',').map(id => BY_ID[id]).filter(Boolean) });
   // live sync while the app is open: the shared counter, rewards and Puszystek's outfit

@@ -14,9 +14,13 @@ export const SLOTS = {
   decor: 'Dekoracja',
   theme: 'Motyw',
   pin: 'Odznaka pary',
+  // Puszystek's house: one item per place in the room
+  hBed: 'Łóżeczko', hRug: 'Dywan', hWall: 'Na ścianie', hWindow: 'Okno', hShelf: 'Półka', hPlant: 'Roślina',
+  hLamp: 'Lampka', hToy: 'Kącik zabaw', hCushion: 'Poduszka', hLights: 'Pod sufitem', hPaper: 'Wystrój ścian',
 };
 // slots that are "set" (Ustaw) rather than worn (Załóż)
-export const SET_SLOTS = ['effect', 'decor', 'theme', 'pin'];
+export const SET_SLOTS = ['effect', 'decor', 'theme', 'pin', 'hBed', 'hRug', 'hWall', 'hWindow', 'hShelf', 'hPlant', 'hLamp', 'hToy', 'hCushion', 'hLights', 'hPaper'];
+export const isHouse = r => r?.cat === 'domek';
 
 export const CATEGORIES = {
   nakrycia: 'Korony i nakrycia głowy',
@@ -26,6 +30,7 @@ export const CATEGORIES = {
   efekty: 'Efekty specjalne',
   odznaki: 'Odznaki i trofea',
   dekoracje: 'Dekoracje otoczenia',
+  domek: 'Domek Puszystka',
 };
 
 export const TIERS = [
@@ -82,6 +87,20 @@ export const REWARDS = [
   { id: 'bigGift', at: 150, cat: 'efekty', name: 'Wielka niespodzianka', desc: 'Prezent na 150 spotkań.', reveals: 'fireworks', special: true },
   { id: 'fireworks', at: 150, cat: 'efekty', slot: 'effect', name: 'Fajerwerki', desc: 'Pikselowe fajerwerki nad łąką.', hidden: 'bigGift' },
   { id: 'legend', at: 200, cat: 'odznaki', slot: 'pin', name: 'Legenda Razem', desc: 'Dwieście spotkań. Nic więcej nie trzeba mówić.', special: true },
+  // Domek Puszystka: furniture and decorations for the shared room
+  { id: 'garland', at: 1, cat: 'domek', slot: 'hWall', name: 'Girlanda serduszek', desc: 'Pierwsza dekoracja domku: kolorowe serduszka nad łóżeczkiem.' },
+  { id: 'cushion', at: 3, cat: 'domek', slot: 'hCushion', name: 'Poduszka-serduszko', desc: 'Miękka poduszka do siedzenia przy dywaniku.' },
+  { id: 'plant', at: 5, cat: 'domek', slot: 'hPlant', name: 'Roślinka w doniczce', desc: 'Mały zielony przyjaciel w różowej doniczce.' },
+  { id: 'lamp', at: 8, cat: 'domek', slot: 'hLamp', name: 'Lampka-grzybek', desc: 'Ciepłe światło na wspólne wieczory.' },
+  { id: 'rugHeart', at: 10, cat: 'domek', slot: 'hRug', name: 'Dywan w serduszko', desc: 'Nowy dywan w kształcie serca.' },
+  { id: 'bedRoyal', at: 15, cat: 'domek', slot: 'hBed', name: 'Łóżeczko z zagłówkiem', desc: 'Ulepszone łóżeczko z kołderką w serduszka.' },
+  { id: 'curtains', at: 20, cat: 'domek', slot: 'hWindow', name: 'Zasłonki w kwiatki', desc: 'Zasłonki do okna z widokiem na ogród.' },
+  { id: 'toys', at: 25, cat: 'domek', slot: 'hToy', name: 'Kącik zabawek', desc: 'Kłębek włóczki i klocki do zabawy.' },
+  { id: 'shelf', at: 30, cat: 'domek', slot: 'hShelf', name: 'Półka na pamiątki', desc: 'Specjalny mebel: ramka, puchar i słoik serduszek.', special: true },
+  { id: 'monstera', at: 40, cat: 'domek', slot: 'hPlant', name: 'Monstera', desc: 'Duża roślina dla zgranej pary.' },
+  { id: 'starlights', at: 50, cat: 'domek', slot: 'hLights', name: 'Gwiezdne światełka', desc: 'Wyjątkowa dekoracja: gwiazdki migoczące pod sufitem.', special: true },
+  { id: 'rugCloud', at: 75, cat: 'domek', slot: 'hRug', name: 'Dywan-chmurka', desc: 'Puszysty dywan miękki jak obłok.' },
+  { id: 'wallLavender', at: 100, cat: 'domek', slot: 'hPaper', name: 'Lawendowa sypialnia', desc: 'Unikalny wystrój: lawendowe ściany w gwiazdki i nocny widok z okna.', special: true },
 ];
 
 export const BY_ID = Object.fromEntries(REWARDS.map(r => [r.id, r]));
@@ -89,10 +108,15 @@ export const BY_ID = Object.fromEntries(REWARDS.map(r => [r.id, r]));
 export const MILESTONES = [10, 25, 50, 100, 150, 200];
 export const isSpecial = r => !!r && (r.special || MILESTONES.includes(r.at));
 
-export const unlockedIds = n => REWARDS.filter(r => n >= r.at).map(r => r.id);
+// Where a reward is earned. Today only shared meetings count; future sources
+// (streaks of days, anniversaries, couple quizzes, challenges, events) plug in
+// here with their own progress value, e.g. { id, source: 'quiz', at: 3 }.
+export const SOURCES = { meetings: (r, p) => (p.meetings ?? 0) >= r.at };
+export const earned = (r, progress) => (SOURCES[r.source || 'meetings'] || (() => false))(r, typeof progress === 'number' ? { meetings: progress } : progress);
+export const unlockedIds = n => REWARDS.filter(r => earned(r, n)).map(r => r.id);
 // surprise contents become visible (and claimable) once their gift is opened
 export const isVisible = (r, opened = []) => !r.hidden || opened.includes(r.hidden);
-export const claimable = (r, n, opened = []) => !!r && n >= r.at && isVisible(r, opened);
+export const claimable = (r, n, opened = []) => !!r && earned(r, n) && isVisible(r, opened);
 
 // Validate a requested outfit against the pair's progress: unknown, locked,
 // non-wearable, still-wrapped and (when `claimed` is given) unclaimed ids are
