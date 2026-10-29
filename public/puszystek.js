@@ -7,8 +7,8 @@ import { BY_ID } from './rewards.js';
 
 // Geometry in reference screen px inside each pose sprite (see tools/items.py).
 export const POSES = {
-  home: { img: 'cat-home', w: 242, h: 201, head: [126, 24], ear: [58, 30], neck: [132, 134], held: [128, 168], back: [121, 80], tail: [196, 150], paw: [206, 104], ears: { l: [40, 0, 104, 36], r: [142, 0, 212, 36] } },
-  cheer: { img: 'cat-cheer', w: 241, h: 212, head: [124, 22], ear: [62, 28], neck: [138, 126], held: [138, 158], back: [121, 82], tail: [198, 168], ears: { l: [46, 0, 104, 34], r: [142, 0, 212, 34] } },
+  home: { img: 'cat-home', w: 242, h: 201, face: [133, 91], head: [126, 24], ear: [58, 30], neck: [132, 134], held: [128, 168], back: [121, 80], tail: [196, 150], paw: [206, 104], ears: { l: [40, 0, 104, 36], r: [142, 0, 212, 36] } },
+  cheer: { img: 'cat-cheer', w: 241, h: 212, face: [133, 88], head: [124, 22], ear: [62, 28], neck: [138, 126], held: [138, 158], back: [121, 82], tail: [198, 168], ears: { l: [46, 0, 104, 34], r: [142, 0, 212, 34] } },
 };
 
 // How each wearable sits on the body: sprite, width (screen px), attach point,
@@ -30,6 +30,13 @@ export const WEAR = {
   lollipop: { src: 'items/lollipop.png', w: 38, on: 'held', edge: 'center', dx: 62, dy: -18, px: 1 },
   earBow: { src: 'items/ear-bow.png', w: 46, on: 'ear', edge: 'center', dy: 0, px: 1 },
   earFlower: { src: 'items/ear-flower.png', w: 38, on: 'ear', edge: 'center', dy: 0, px: 1 },
+  chefHat: { src: 'items/chef-hat.png', w: 96, on: 'head', edge: 'bottom', dy: 22, px: 1 },
+  bunnyEars: { src: 'items/bunny-ears.png', w: 96, on: 'head', edge: 'bottom', dy: 14, px: 1 },
+  sunglasses: { src: 'items/sunglasses.png', w: 128, on: 'face', edge: 'center', dy: 0, px: 1 },
+  bowtie: { src: 'items/bowtie.png', w: 50, on: 'neck', edge: 'top', dy: -4, px: 1 },
+  daisy: { src: 'items/daisy.png', w: 38, on: 'ear', edge: 'center', dy: 0, px: 1 },
+  starWand: { src: 'items/star-wand.png', w: 40, on: 'held', edge: 'center', dx: 74, dy: -30, px: 1 },
+  heartBalloon: { src: 'items/heart-balloon.png', w: 46, on: 'held', edge: 'center', dx: 104, dy: -74, px: 1 },
   wings: { src: 'items/wing.png', w: 64, on: 'back', pair: 'items/wing-r.png', px: 1 },
   rainbow: { src: 'items/rainbow.png', w: 64, on: 'back', pair: 'items/rainbow-r.png', px: 1 },
 };
@@ -124,13 +131,17 @@ export function puszystekHTML({ pose = 'home', box, outfit = [], label = 'Puszys
 
 // ------------------------------------------------------------------ behaviour
 const IDLE_ACTS = [['blink', 30], ['ears', 18], ['tail', 18], ['sway', 12], ['wave', 9], ['hug', 8], ['hop', 5]];
-const DUR = { blink: 260, ears: 700, tail: 1300, sway: 1800, wave: 1500, hug: 1500, hop: 800, stretch: 1100, spin: 1100, celebrate: 2600, reward: 2200, giggle: 700 };
+const DUR = { blink: 260, ears: 700, tail: 1300, sway: 1800, wave: 1500, hug: 1500, hop: 800, stretch: 1100, spin: 1100, celebrate: 2600, reward: 2200, giggle: 700, yawn: 1500, pounce: 950, eat: 1800, look: 1400 };
 const SLEEP_AFTER = 45000;
+// mood follows the pair's shared energy: livelier when happy, more yawns and
+// earlier naps when sleepy or tired (never sad)
+const MOOD_ACTS = { happy: { hop: 3, wave: 1.5, tail: 1.3 }, calm: {}, sleepy: { yawn: 14, hop: .3, sway: 1.5 }, tired: { yawn: 18, hop: 0, wave: .3, blink: 1.6 } };
+const MOOD_SLEEP = { happy: 60000, calm: 45000, sleepy: 25000, tired: 14000 };
 
 export class Puszystek {
   constructor({ reduced, onState, still = false } = {}) {
     this.reduced = reduced; this.onState = onState; this.still = still;
-    this.el = null; this.state = 'idle'; this.busy = false; this.timer = 0; this.lastInput = Date.now();
+    this.el = null; this.state = 'idle'; this.busy = false; this.timer = 0; this.lastInput = Date.now(); this.mood = 'happy';
     const wake = () => { this.lastInput = Date.now(); if (this.state === 'sleepy') this.wake(); };
     ['pointerdown', 'keydown', 'scroll', 'touchstart'].forEach(e => addEventListener(e, wake, { passive: true }));
     document.addEventListener('visibilitychange', () => { if (!document.hidden) this.schedule(); });
@@ -138,9 +149,11 @@ export class Puszystek {
   mount(el) {
     this.el = el; this.busy = false;
     if (!el) return;
+    el.dataset.mood = this.mood;
     this.set(this.state === 'sleepy' ? 'sleepy' : el.dataset.pose === 'cheer' ? 'happy' : 'idle');
     this.schedule();
   }
+  setMood(mood) { this.mood = MOOD_ACTS[mood] ? mood : 'happy'; if (this.el) this.el.dataset.mood = this.mood; }
   set(s) { this.state = s; if (this.el) this.el.dataset.state = s; this.onState?.(s); }
   play(act, ms = DUR[act]) {
     const el = this.el; if (!el) return Promise.resolve();
@@ -158,9 +171,10 @@ export class Puszystek {
   tick() {
     if (!this.el?.isConnected) return;
     if (this.state === 'sleepy') return this.schedule();
-    if (Date.now() - this.lastInput > SLEEP_AFTER && ['idle', 'happy'].includes(this.state)) { this.sleep(); return this.schedule(); }
+    if (Date.now() - this.lastInput > (MOOD_SLEEP[this.mood] || SLEEP_AFTER) && ['idle', 'happy'].includes(this.state)) { this.sleep(); return this.schedule(); }
     if (!this.busy && ['idle', 'happy'].includes(this.state)) {
-      const pool = IDLE_ACTS.filter(([a]) => !(a === 'wave' && !this.el.querySelector('.pz-paw')) && !(a === 'tail' && !this.el.querySelector('.pz-tail')));
+      const k = MOOD_ACTS[this.mood] || {};
+      const pool = [...IDLE_ACTS, ['yawn', 0]].map(([a, w]) => [a, w * (k[a] ?? 1) + (a === 'yawn' ? (k.yawn || 0) : 0)]).filter(([a, w]) => w > 0 && !(a === 'wave' && !this.el.querySelector('.pz-paw')) && !(a === 'tail' && !this.el.querySelector('.pz-tail')));
       let r = Math.random() * pool.reduce((s, [, w]) => s + w, 0);
       const act = pool.find(([, w]) => (r -= w) < 0)?.[0] || 'blink';
       this.play(act);

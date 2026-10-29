@@ -3,12 +3,13 @@
 // Plus the shared wardrobe (#/kolekcja), the meeting celebration and Puszystek.
 // ?demo=1 renders the mock-up data and never writes to the API
 // (?count=N and ?outfit=a,b override the demo values; ?still=1 freezes idle acts).
-import { REWARDS as CATALOG, BY_ID, CATEGORIES, SLOTS, SET_SLOTS, MILESTONES, RARITY, rarityOf, unlockedIds, sanitizeOutfit, claimable, isVisible, isSpecial, isHouse, HOUSE_CATS, ACHIEVEMENTS, achievementOf } from './rewards.js';
+import { REWARDS as CATALOG, BY_ID, CATEGORIES, SLOTS, SET_SLOTS, MILESTONES, RARITY, rarityOf, unlockedIds, sanitizeOutfit, claimable, isVisible, isSpecial, isHouse, HOUSE_CATS, ACHIEVEMENTS, achievementOf, SOURCE_UNIT, SETS, setItems } from './rewards.js';
 import { puszystekHTML, Puszystek, WEAR, DECOR } from './puszystek.js';
 import { medalSVG } from './medals.js';
-import { ART as HOUSE_ART, ITEMS as ROOM_ITEMS, ROOM, roomHTML, RoomEditor, HouseLife, positions, placedIds, freeSpot } from './house.js';
-import { check as roomCheck, movable } from './room.js';
+import { ART as HOUSE_ART, ITEMS as ROOM_ITEMS, ROOM, ROOMS, ROOM_ORDER, DEFAULT_NAMES, roomHTML, RoomEditor, HouseLife, positions, placedIds, freeSpot, roomOf } from './house.js';
+import { check as roomCheck, movable, inRoom, roomOpen, applyMove } from './room.js';
 import { PairMap } from './map.js';
+import { MODES as QUIZ_MODES, MAX_OPEN } from './quiz-bank.js';
 
 const root = document.getElementById('app');
 const params = new URLSearchParams(location.search);
@@ -32,6 +33,11 @@ let syncOn = DEMO || pref('sync', true);
 const h = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const plural = (n, a, b, c) => { const v = Math.abs(n); return v === 1 ? a : (v % 10 >= 2 && v % 10 <= 4 && (v % 100 < 12 || v % 100 > 14)) ? b : c; };
 const meetings = n => `${n} ${plural(n, 'spotkanie', 'spotkania', 'spotkań')}`;
+// progress toward a reward in its own currency: meetings, quizzes or days full of energy
+const PROG_KEY = { meetings: 'meetings', quiz: 'quizzes', care: 'care' };
+const progOf = (r, m) => m.prog[PROG_KEY[r.source || 'meetings']] ?? 0;
+const units = (r, k) => `${k} ${plural(k, ...SOURCE_UNIT[r.source || 'meetings'])}`;
+const ALL_PROG = { meetings: 1e9, quizzes: 1e9, care: 1e9 };
 const dp = v => `calc(${(+v).toFixed(2)} * var(--u))`;
 const at = (x, y, w) => `left:${dp(x / S)};top:${dp(y / S)};width:${dp(w / S)}`;
 const dateText = ms => new Date(ms).toLocaleDateString('pl-PL', { day: 'numeric', month: 'long', year: 'numeric' });
@@ -93,7 +99,7 @@ const TILE_BG = { nakrycia: 'linear-gradient(160deg,#fff4dc,#ffe2ef)', ozdoby: '
 // badges are medallions in their rarity's metal (medals.js)
 const badgeArt = (r, cls = '') => medalSVG(r, rarityOf(r), cls);
 const isBadge = r => r.slot === 'pin' || (r.cat === 'odznaki' && !WEAR[r.id]);
-const FEATURED = CATALOG.filter(r => !r.hidden && r.at % 10 === 0 && !isHouse(r));
+const FEATURED = CATALOG.filter(r => !r.hidden && !r.source && r.at % 10 === 0 && !isHouse(r));
 function artHTML(r) {
   if (TILE_ART[r.id]) return `<img src="/img/${TILE_ART[r.id]}.webp" alt=""${TILE_FILTER[r.id] ? ` style="filter:${TILE_FILTER[r.id]}"` : ''}>`;
   if (isHouse(r)) return `<img class="px-art house-art" src="/img/house/${HOUSE_ART[r.id].src}.png" alt="">`;
@@ -105,9 +111,9 @@ function artHTML(r) {
 }
 // locked -> ready (earned, waiting to be claimed) -> owned (in the inventory,
 // or "in the trophy case" for badges) -> worn / set / pinned
-const itemStatus = (r, m) => m.n < r.at ? 'locked' : !m.claimed.includes(r.id) ? 'ready' : m.outfit.includes(r.id) ? 'worn' : 'owned';
+const itemStatus = (r, m) => progOf(r, m) < r.at ? 'locked' : !m.claimed.includes(r.id) ? 'ready' : m.outfit.includes(r.id) ? 'worn' : 'owned';
 function statusText(r, st) {
-  if (st === 'locked') return meetings(r.at);
+  if (st === 'locked') return units(r, r.at);
   if (st === 'ready') return 'Do odebrania';
   if (st === 'worn') return isHouse(r) ? 'W domku' : r.slot === 'pin' ? 'Na liczniku' : SET_SLOTS.includes(r.slot) ? 'Ustawione' : 'Założone';
   return isHouse(r) ? 'W schowku' : isBadge(r) ? 'W gablocie' : 'W ekwipunku';
@@ -137,12 +143,14 @@ let demoOpened = [];
 let demoClaimed = null;
 function demoState() {
   const now = Date.now(), n = params.has('count') ? Math.max(0, +params.get('count') || 0) : 27;
+  const prog = { meetings: n, quizzes: params.has('quizzes') ? +params.get('quizzes') || 0 : 2, care: params.has('care') ? +params.get('care') || 0 : 3 };
   return {
     you: 1, connected: true, together: true, code: null, count: n,
     members: [{ name: 'Miłosz', slot: 1 }, { name: 'Ola', slot: 2 }],
     firstMetAt: (d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`)(new Date(now - 214 * DEMO_DAY)),
     meetings: [{ id: 'd1', occurred_at: now - 3 * DEMO_DAY - 3600000, source: 'auto' }, { id: 'd2', occurred_at: now - 9 * DEMO_DAY, source: 'manual' }],
-    rewards: { room: {}, achieved: {}, unlocked: unlockedIds(n), claimed: demoClaimed ??= CATALOG.filter(r => claimable(r, n, demoOpened) && (params.has('outfit') || !['bowLav', 'week'].includes(r.id))).map(r => r.id), equipped: sanitizeOutfit(demoOutfit, n, demoOpened), opened: demoOpened, version: 1 },
+    progress: prog, energy: { value: 72, mood: 'happy', today: 12, streak: 3 },
+    rewards: { room: {}, achieved: {}, unlocked: unlockedIds(prog), claimed: demoClaimed ??= CATALOG.filter(r => claimable(r, prog, demoOpened) && (params.has('outfit') || !['bowLav', 'week'].includes(r.id))).map(r => r.id), equipped: sanitizeOutfit(demoOutfit, prog, demoOpened), opened: demoOpened, version: 1 },
     proximity: { stage: 'recorded', reason: 'recorded', radius: 100, distance: 4, strong: true, since: now - 900000, held: 900000, canConfirm: false, recorded: true, me: { on: true, age: 4000, acc: 12 }, partner: { on: true, age: 7000, acc: 14 } },
     push: { available: false, subscribed: false },
   };
@@ -165,12 +173,16 @@ function model() {
     together: !!(pr.near || state.together), pr,
     left: goal - n,
     days: state.firstMetAt ? daysSince(state.firstMetAt) : null,
-    unlocked: CATALOG.filter(r => n >= r.at && !r.hidden),
     outfit: rw.equipped || [], opened: rw.opened || [], claimed: rw.claimed || [],
+    prog: { meetings: n, quizzes: state.progress?.quizzes ?? 0, care: state.progress?.care ?? 0 },
   };
+  m.unlocked = CATALOG.filter(r => progOf(r, m) >= r.at && !r.hidden);
+  m.energy = state.energy || null;
+  m.quiz = state.quiz || null;
+  m.quizInvite = !!(m.quiz && m.quiz.state === 'lobby' && m.quiz.by !== state.you && !m.quiz.ready.me);
   // earned rewards waiting to be claimed into the shared inventory
-  m.ready = CATALOG.filter(r => claimable(r, n, m.opened) && !m.claimed.includes(r.id) && !isHouse(r));
-  m.houseReady = CATALOG.filter(r => isHouse(r) && claimable(r, n, m.opened) && !m.claimed.includes(r.id));
+  m.ready = CATALOG.filter(r => claimable(r, m.prog, m.opened) && !m.claimed.includes(r.id) && !isHouse(r));
+  m.houseReady = CATALOG.filter(r => isHouse(r) && claimable(r, m.prog, m.opened) && !m.claimed.includes(r.id));
   m.pin = m.outfit.map(id => BY_ID[id]).find(r => r?.slot === 'pin');
   if (DEMO && !params.has('count')) Object.assign(m, { goal: 50, next: 60, level: 4, levelGoal: 50, left: 23, nodes: [10, 20, 30, 40, 50, 60], reachedAll: 5 });
   m.reached = m.reachedAll ?? m.nodes.filter(v => n >= v).length;
@@ -186,16 +198,20 @@ function phrase(m) {
   if (!state.connected) return `Czekam na drugą osobę ${I.hearts2}`;
   if (m.n === 0) return `Dotknijcie licznika po spotkaniu ${I.hearts2}`;
   if (m.d === 0) return `Puszystek dziś promienieje! ${I.hearts2}`;
+  if (m.energy?.rest) return `Puszystek odpoczywa i czeka na was ${I.hearts2}`;
+  if (m.energy?.mood === 'tired') return `Puszystek drzemie i śni o waszym spotkaniu ${I.hearts2}`;
+  if (m.energy?.mood === 'sleepy') return `Puszystek trochę ziewa. Może quiz na pobudkę? ${I.hearts2}`;
   if (m.d !== null && m.d < 5) return `Cieszę się, że się widzieliście! ${I.hearts2}`;
   return `Tęsknię razem z wami ${I.hearts2}`;
 }
 
 // ------------------------------------------------------------------ network
 let toastTimer;
+const TZ = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || ''; } catch { return ''; } })();
 function toast(s) { const el = document.getElementById('toast'); el.innerHTML = s; el.classList.add('show'); clearTimeout(toastTimer); toastTimer = setTimeout(() => el.classList.remove('show'), 3000); }
 async function request(path, data) {
   if (DEMO && data !== undefined) throw new Error('To tylko podgląd — nic nie zapisujemy ♡');
-  const opts = { method: data === undefined ? 'GET' : 'POST', headers: { ...(token ? { Authorization: 'Bearer ' + token } : {}), ...(data === undefined ? {} : { 'Content-Type': 'application/json' }) }, cache: 'no-store' };
+  const opts = { method: data === undefined ? 'GET' : 'POST', headers: { ...(token ? { Authorization: 'Bearer ' + token, 'X-Razem-TZ': TZ } : {}), ...(data === undefined ? {} : { 'Content-Type': 'application/json' }) }, cache: 'no-store' };
   if (data !== undefined) opts.body = JSON.stringify(data);
   const res = await fetch(path, opts);
   let json; try { json = await res.json(); } catch { throw new Error('Brak odpowiedzi serwera.'); }
@@ -268,7 +284,26 @@ function viewHome(m) {
   ${deco('home')}
   ${cat('home')}
   <button class="house-btn" data-action="house" aria-label="Domek Puszystka${m.houseReady.length ? `, ${m.houseReady.length} nowe rzeczy` : ''}"><img class="px-art" src="/img/house/icon.png" alt="">${m.houseReady.length ? `<span class="dot">${m.houseReady.length}</span>` : ''}</button>
+  ${state?.connected || DEMO ? `<button class="quiz-btn" data-action="quiz" aria-label="Quizy we dwoje${m.quizInvite ? ', masz zaproszenie' : ''}"><img class="px-art" src="/img/ui/ic-quiz.png" alt="">${m.quizInvite || m.quiz?.state === 'playing' ? '<span class="dot">!</span>' : ''}</button>` : ''}
+  ${m.energy ? energyMeter(m.energy) : ''}
   <div class="bubble" ${!DEMO && state && !state.connected ? 'data-action="copy"' : ''}>${phrase(m)}</div>`;
+}
+// Puszystek's shared energy: a small pixel meter on the home screen
+const MOOD = { happy: 'pełen energii', calm: 'spokojny', sleepy: 'śpiący', tired: 'zmęczony' };
+function energyMeter(e) {
+  const v = Math.round(e.value), seg = Math.round(v / 10);
+  return `<button class="energy ${e.mood}${e.rest ? ' rest' : ''}" data-action="energy" aria-label="Energia Puszystka: ${v} na 100, ${MOOD[e.mood]}${e.rest ? ', odpoczywa' : ''}">
+    <img class="px-art" src="/img/ui/ic-energy.png" alt=""><span class="en-bar">${Array.from({ length: 10 }, (_, i) => `<i class="${i < seg ? 'on' : ''}"></i>`).join('')}</span><b>${v}</b></button>`;
+}
+function energySheet(m) {
+  const e = m.energy || { value: 70, mood: 'happy', today: 0, rest: false };
+  const line = e.rest ? 'Puszystek odpoczywa — jego energia teraz nie spada.' : { happy: 'Puszystek jest pełen energii i chętnie się bawi!', calm: 'Puszystek jest spokojny i zadowolony.', sleepy: 'Puszystek trochę ziewa. Spotkanie albo quiz go obudzą.', tired: 'Puszystek odpoczywa i czeka na wasze następne spotkanie.' }[e.mood];
+  return `<h2>Energia Puszystka</h2>
+    <div class="en-big ${e.mood}"><img class="px-art" src="/img/ui/ic-energy.png" alt=""><span class="en-bar">${Array.from({ length: 10 }, (_, i) => `<i class="${i < Math.round(e.value / 10) ? 'on' : ''}"></i>`).join('')}</span><b>${Math.round(e.value)}<small>/100</small></b></div>
+    <p>${line}${e.today ? ` Dzisiaj: ${e.today > 0 ? '+' : ''}${e.today}.` : ''}</p>
+    <ul class="en-rules"><li><b>+12</b> pierwsze spotkanie dnia, <b>+3</b> kolejne (do dwóch)</li><li><b>+5</b> pierwszy wspólny quiz dnia</li><li><b>−3</b> dzień bez spotkania (nigdy poniżej 15)</li></ul>
+    <p class="note">Energia jest wspólna i nigdy nie zabiera nagród. Dni, w których Puszystek kończy z energią 75 lub więcej, odblokowują specjalne rzeczy.</p>
+    <div class="row-btns"><button class="btn-soft" data-action="close">Zamknij</button><button class="btn-main" data-action="energy-rest">${e.rest ? 'Koniec odpoczynku' : 'Tryb odpoczynku'}</button></div>`;
 }
 const hearts4 = () => [8.6, 15.8, 34, 64.6].map((l, i) => `<span class="wh" style="left:${dp(l + 22)};animation-delay:${i * .4}s"><img src="/img/ui/heart-white.png" alt=""></span>`).join('');
 
@@ -277,7 +312,7 @@ function viewRewards(m) {
   const xs = [49.4, 105.6, 162.4, 219.1, 275.9, 336.6];
   const barFill = m.reached <= 0 ? 0 : Math.min(1, (xs[Math.min(m.reached, 5) - 1] - 49.4) / (xs[5] - 49.4));
   const latest = m.unlocked.filter(r => FEATURED.includes(r)).at(-1) || m.unlocked.at(-1);
-  const nextReward = CATALOG.find(r => m.n < r.at && !r.hidden);
+  const nextReward = CATALOG.find(r => m.n < r.at && !r.hidden && !r.source);
   if (tileStart === null) tileStart = DEMO && !params.has('count') ? FEATURED.findIndex(r => r.id === 'crown') : Math.max(0, Math.min(FEATURED.length - 4, FEATURED.findIndex(r => m.n < r.at) - 1));
   const tiles = FEATURED.slice(tileStart, tileStart + 4);
   const gifted = latest?.reveals && !m.opened.includes(latest.id);
@@ -429,7 +464,7 @@ function viewDetect(m) {
   </section>
   <section class="card row rise" style="--i:1;top:${dp(525.1)}"><span class="ic loc">${I.pin('')}</span><h4>Lokalizacja</h4><p>Pozwala wykrywać, kiedy jesteście razem.</p><button class="switch" role="switch" aria-checked="${DEMO || geoOn}" data-action="toggle-location" aria-label="Lokalizacja"></button></section>
   <section class="card row rise" style="--i:2;top:${dp(583.2)}"><span class="ic bell">${I.bell}</span><h4>Powiadomienia</h4><p>Puszystek da znać, gdy będziecie blisko.</p><button class="switch" role="switch" aria-checked="${DEMO || !!state?.push?.subscribed}" data-action="toggle-notify" aria-label="Powiadomienia"></button></section>
-  <section class="card row rise" style="--i:3;top:${dp(641.6)};height:${dp(64.4)}"><span class="ic sync" style="top:${dp(11.6)}">${I.sync}</span><h4>Wspólna synchronizacja</h4><p>Spotkania zapisują się automatycznie<br>w Waszym pasku.</p><button class="switch" role="switch" aria-checked="${syncOn}" data-action="toggle-sync" aria-label="Wspólna synchronizacja" style="top:${dp(14.2)}"></button></section>
+  <section class="card row rise" style="--i:3;top:${dp(641.6)};height:${dp(64.4)}"><span class="ic sync" style="top:${dp(11.6)}">${I.sync}</span><h4>Synchronizacja na tym telefonie</h4><p>Na bieżąco pobiera wspólne dane.<br>Drugi telefon ma własny przełącznik.</p><button class="switch" role="switch" aria-checked="${syncOn}" data-action="toggle-sync" aria-label="Synchronizacja na tym telefonie" style="top:${dp(14.2)}"></button></section>
   <img class="meadow-bg" src="/img/meadow-detect.webp" alt="" style="position:absolute;left:0;width:100%;top:${dp(1245 / S)}">
   ${themeGlow(m, 1245)}
   ${deco('det')}
@@ -470,15 +505,24 @@ function collHouse(m, tabs) {
   const items = CATALOG.filter(isHouse), inRoom = items.filter(r => m.outfit.includes(r.id)).length;
   return `${tabs}
     <div class="house-cta rise" style="--i:0"><img class="px-art" src="/img/house/icon.png" alt=""><div><b>Domek Puszystka</b><small>${inRoom} ${plural(inRoom, 'rzecz', 'rzeczy', 'rzeczy')} w pokoju · ${m.houseReady.length} do odebrania</small></div><button class="btn-main sm" data-action="house-open-edit">Urządzaj</button></div>
-    ${Object.entries(HOUSE_CATS).filter(([k]) => k !== 'specjalne').map(([k, v], i) => { const list = items.filter(r => r.hcat === k); return `<section class="card coll-card rise" style="--i:${i + 1}"><h3>${v} <small>${list.filter(r => m.claimed.includes(r.id)).length} z ${list.length}</small></h3><div class="grid">${list.map(r => itemTile(r, m)).join('')}</div></section>`; }).join('')}
+    ${ROOM_ORDER.map((k, i) => { const list = items.filter(r => roomOf(r.id) === k); return `<section class="card coll-card rise" style="--i:${i + 1}"><h3>${ROOMS[k].name} <small>${list.filter(r => m.claimed.includes(r.id)).length} z ${list.length}</small></h3><div class="grid">${list.map(r => itemTile(r, m)).join('')}</div></section>`; }).join('')}
+    ${setsCard(m)}
     <p class="coll-note">Rzeczy do domku ustawiacie w pokoju Puszystka. Układ jest wspólny dla was obojga.</p>`;
+}
+// themed sets across both inventories: how much of each is collected
+function setsCard(m) {
+  const rows = Object.entries(SETS).map(([k, v]) => {
+    const ids = setItems(k), have = ids.filter(id => m.claimed.includes(id)).length;
+    return `<div class="set-row${have === ids.length ? ' done' : ''}"><div class="set-art">${ids.slice(0, 4).map(id => ROOM_ITEMS[id] ? houseArt(id, 26) : `<img class="px-art" src="/img/${WEAR[id]?.src}" alt="" style="width:20px">`).join('')}</div><div><b>${h(v.name)}</b><small>${have === ids.length ? 'Komplet zebrany ♥' : `${have} z ${ids.length} · ${ROOMS[v.room].name}`}</small><i class="bar"><i style="width:${(have / ids.length * 100).toFixed(0)}%"></i></i></div></div>`;
+  }).join('');
+  return `<section class="card coll-card sets rise" style="--i:7"><h3>Kolekcje tematyczne</h3>${rows}</section>`;
 }
 function collAch(m, tabs) {
   const ach = state?.rewards?.achieved || {};
   const rows = ACHIEVEMENTS.map(a => {
-    const done = m.n >= a.at, when = ach[a.id] ? dateText(ach[a.id]) : done ? 'Zdobyte' : `Jeszcze ${meetings(a.at - m.n)}`;
+    const have = m.prog[PROG_KEY[a.source]] ?? 0, done = have >= a.at, when = ach[a.id] ? dateText(ach[a.id]) : done ? 'Zdobyte' : `Jeszcze ${units({ source: a.source }, a.at - have)}`;
     const chips = a.rewards.map(id => { const r = BY_ID[id]; return `<button data-action="item" data-id="${id}"><span class="k">${isHouse(r) ? 'Domek' : 'Puszystek'}</span>${h(r.name)}</button>`; }).join('');
-    return `<div class="ach ${done ? 'done' : 'locked'}"><span class="ach-num">${a.at}</span><div><b>${h(a.name)}</b><small>${when}</small></div><div class="ach-rw">${chips}</div></div>`;
+    return `<div class="ach ${done ? 'done' : 'locked'}${a.source !== 'meetings' ? ` src-${a.source}` : ''}"><span class="ach-num">${a.at}</span><div><b>${h(a.name)}</b><small>${when}</small></div><div class="ach-rw">${chips}</div></div>`;
   }).join('');
   return `${tabs}<div class="ach-list">${rows}</div><p class="coll-note">Osiągnięcie to wspólny moment. Każde daje jedną lub kilka nagród: dla Puszystka albo do domku.</p>`;
 }
@@ -508,23 +552,26 @@ function viewOnboarding() {
 // large as the screen allows at a whole-pixel scale. "Urządzaj" opens the
 // furniture drawer (a side panel on wide screens) and makes things draggable.
 const life = new HouseLife(pusz, reduced);
-let houseEditing = false, houseSig = '', houseOrigin = null, houseSel = '', houseCat = 'all', lastMove = null;
+let houseEditing = false, houseSig = '', houseOrigin = null, houseSel = '', houseCat = 'all', lastMove = null, houseEnter = '';
+let houseRoom = (() => { try { return ROOMS[localStorage.getItem('razem-room')] ? localStorage.getItem('razem-room') : 'sypialnia'; } catch { return 'sypialnia'; } })();
+const ROOM_ICON = { salon: 'sofa-basic', sypialnia: 'bed-basic', kuchnia: 'stove', lazienka: 'tub-basic', taras: 'pots' };
 const roomPos = () => positions(model()?.outfit || [], state?.rewards?.room);
 const houseArt = (id, box) => { const a = HOUSE_ART[id], k = Math.max(1, Math.min(6, Math.floor(box / Math.max(a.w, a.h)))); return `<img class="px-art" src="/img/house/${a.src}.png" alt="" style="width:${a.w * k}px;height:${a.h * k}px">`; };
 function houseCard(r, m) {
   const st = itemStatus(r, m);
-  const label = { locked: `${I.lock}${meetings(r.at)}`, ready: `${I.gift}Do odebrania`, worn: `${I.check}W pokoju`, owned: 'W schowku' }[st];
+  const label = { locked: `${I.lock}${units(r, r.at)}`, ready: `${I.gift}Do odebrania`, worn: `${I.check}W pokoju`, owned: 'W schowku' }[st];
   return `<button class="hc ${st}${houseSel === r.id ? ' sel' : ''}" data-action="house-pick" data-id="${r.id}" data-rar="${rarityOf(r)}" aria-label="${h(r.name)}: ${label.replace(/<[^>]+>/g, '')}"><span class="hc-art">${houseArt(r.id, 56)}</span><span class="hc-nm">${h(r.name)}</span><span class="hc-st">${label}</span></button>`;
 }
 function housePanel(m) {
-  const items = CATALOG.filter(isHouse), owned = items.filter(r => m.claimed.includes(r.id)).length;
-  const inRoom = placedIds(m.outfit).length + items.filter(r => ROOM_ITEMS[r.id]?.zone === 'bg' && m.outfit.includes(r.id)).length;
-  const next = items.find(r => m.n < r.at);
+  const all = CATALOG.filter(isHouse), items = all.filter(r => roomOf(r.id) === houseRoom), owned = items.filter(r => m.claimed.includes(r.id)).length;
+  const here = items.filter(r => m.outfit.includes(r.id)).length, ready = m.houseReady.filter(r => roomOf(r.id) === houseRoom).length;
+  const next = items.filter(r => progOf(r, m) < r.at).sort((a, b) => (a.at - progOf(a, m)) - (b.at - progOf(b, m)))[0];
+  const R = ROOMS[houseRoom];
   if (!houseEditing) return `<div class="hp-view">
-      <div class="hp-sum"><div><b>${owned}</b><span>z ${items.length} rzeczy</span></div><div><b>${inRoom}</b><span>w pokoju</span></div><div><b>${m.houseReady.length}</b><span>do odebrania</span></div></div>
-      ${next ? `<div class="hp-next" data-rar="${rarityOf(next)}"><span class="hc-art">${houseArt(next.id, 46)}</span><div><small>Następna rzecz do domku</small><b>${h(next.name)}</b><em>za ${meetings(next.at - m.n)}</em><i class="bar"><i style="width:${Math.min(100, m.n / next.at * 100).toFixed(1)}%"></i></i></div></div>` : '<p class="hp-done">Wszystko do domku zdobyte ♥</p>'}
-      <button class="btn-main hp-go" data-action="house-edit">Urządzaj pokój ${I.heart('', '#fff')}</button>
-      <div class="hp-wide"><h3>Wyposażenie domku</h3><div class="hp-grid">${items.map(r => houseCard(r, m)).join('')}</div></div>
+      <div class="hp-sum"><div><b>${owned}</b><span>z ${items.length} rzeczy</span></div><div><b>${here}</b><span>ustawione</span></div><div><b>${ready}</b><span>do odebrania</span></div></div>
+      ${next ? `<div class="hp-next" data-rar="${rarityOf(next)}"><span class="hc-art">${houseArt(next.id, 46)}</span><div><small>Następna rzecz: ${R.name.toLowerCase()}</small><b>${h(next.name)}</b><em>za ${units(next, next.at - progOf(next, m))}</em><i class="bar"><i style="width:${Math.min(100, progOf(next, m) / next.at * 100).toFixed(1)}%"></i></i></div></div>` : `<p class="hp-done">${R.name}: wszystko zdobyte ♥</p>`}
+      ${roomOpen(houseRoom, m.n) ? `<button class="btn-main hp-go" data-action="house-edit">Urządzaj: ${R.name.toLowerCase()} ${I.heart('', '#fff')}</button>` : ''}
+      <div class="hp-wide"><h3>${R.name}: wyposażenie</h3><div class="hp-grid">${items.map(r => houseCard(r, m)).join('')}</div></div>
     </div>`;
   const list = items.filter(r => houseCat === 'all' || (houseCat === 'specjalne' ? r.special : r.hcat === houseCat));
   return `<div class="hp-edit"><div class="hp-tabs" role="tablist" aria-label="Kategorie wyposażenia">${[['all', 'Wszystko'], ...Object.entries(HOUSE_CATS)].map(([k, v]) => `<button role="tab" aria-selected="${houseCat === k}" data-action="house-cat" data-cat="${k}">${v}</button>`).join('')}</div>
@@ -541,12 +588,12 @@ function houseScale(box) {
 function placeTools(el) {
   const tools = el.querySelector('.r-tools'), id = houseSel, p = roomPos()[id];
   if (!houseEditing || !id || !p) { tools.hidden = true; return; }
-  const it = ROOM_ITEMS[id], basic = id === 'bedBasic' || id === 'rugBasic';
+  const it = ROOM_ITEMS[id], basic = !!it.basic;
   tools.hidden = false;
   tools.style.left = `calc(${p[0] + it.w / 2} * var(--px))`;
   tools.style.top = `calc(${p[1] < 30 ? p[1] + it.h + 2 : p[1] - 2} * var(--px))`;
   tools.classList.toggle('below', p[1] < 30);
-  tools.innerHTML = `<span class="rt-name">${h(BY_ID[id]?.name || (id === 'bedBasic' ? 'Wiklinowe legowisko' : 'Lawendowy dywanik'))}</span>
+  tools.innerHTML = `<span class="rt-name">${h(BY_ID[id]?.name || DEFAULT_NAMES[id] || '')}</span>
     ${lastMove?.id === id ? '<button data-action="house-undo">Cofnij</button>' : ''}${basic ? '' : '<button data-action="house-stow">Schowaj</button>'}<button class="ok" data-action="house-done">Gotowe</button>`;
   // keep the toolbar inside the room
   const room = el.querySelector('.room').getBoundingClientRect(), half = tools.offsetWidth / 2, cx = (p[0] + it.w / 2) * (room.width / ROOM.w);
@@ -560,11 +607,11 @@ function selectInRoom(el, id) {
 }
 const editor = new RoomEditor({
   onSelect: (id, dragging) => { const el = document.getElementById('house'); if (el) selectInRoom(el, id); if (dragging) life.stop(); },
-  onMove: async (id, p, prev) => { state.rewards.room = { ...(state.rewards.room || {}), [id]: p }; if (await moveItem(id, p, prev)) { syncHouse(); life.cheer(); } },
+  onMove: async (id, p, prev) => { state.rewards.room = applyMove(state.rewards.room || {}, id, p, roomPos()); if (await moveItem(id, p, prev)) { syncHouse(); life.cheer(); } },
   onInvalid: reason => toast(h(reason)),
 });
 async function moveItem(id, p, prev) {
-  if (DEMO) { state.rewards.room = { ...(state.rewards.room || {}), [id]: p }; lastMove = { id, prev }; return true; }
+  if (DEMO) { state.rewards.room = applyMove(state.rewards.room || {}, id, p, roomPos()); lastMove = { id, prev }; return true; }
   try { state = await request('/api/room-move', { id, x: p[0], y: p[1], expect: prev }); saveState(); lastMove = { id, prev }; return true; }
   catch (e) {
     if (e.data?.conflict) { state = e.data.state; toast(`${h(otherName())} właśnie przestawił(a) ten przedmiot ♡`); }
@@ -576,6 +623,7 @@ async function moveItem(id, p, prev) {
 // stood in its place), find it a free spot, select it
 async function placeHouse(id) {
   const r = BY_ID[id];
+  if (roomOf(id) !== houseRoom) goRoom(roomOf(id));
   if (!model().claimed.includes(id)) await claim(id);
   if (!model().outfit.includes(id) && !await changeOutfit('equip', id)) return;
   saveState(); freshItem = id;
@@ -598,46 +646,191 @@ function syncHouse(force = false) {
     el = document.createElement('div'); el.id = 'house'; el.className = 'house'; el.setAttribute('role', 'dialog'); el.setAttribute('aria-label', 'Domek Puszystka');
     if (houseOrigin) { el.style.setProperty('--ox', houseOrigin[0] + 'px'); el.style.setProperty('--oy', houseOrigin[1] + 'px'); }
     el.innerHTML = `<header class="h-top"><button class="h-back" data-action="house-back" aria-label="Wróć">${I.back}</button><h2>Domek Puszystka</h2><button class="h-edit" data-action="house-edit" aria-pressed="false">Urządzaj</button></header>
-      <div class="h-main"><div class="room-wrap"><div class="room-frame"><div class="room"></div><div class="r-tools" hidden></div></div></div><aside class="h-panel"></aside></div>`;
+      <nav class="h-rooms" aria-label="Pokoje"></nav>
+      <div class="h-main"><div class="room-wrap"><div class="room-frame"><div class="room"></div><div class="r-tools" hidden></div><button class="r-door l" data-action="house-door" data-dir="-1" aria-label="Poprzedni pokój">${I.back}</button><button class="r-door r" data-action="house-door" data-dir="1" aria-label="Następny pokój">${I.back}</button><div class="room-lock" hidden></div></div></div><aside class="h-panel"></aside></div>`;
     document.body.appendChild(el);
     editor.attach(el.querySelector('.room'), roomPos);
+    swipeRooms(el.querySelector('.room'));
   }
+  el.querySelector('.h-rooms').innerHTML = ROOM_ORDER.map(k => {
+    const open = roomOpen(k, m.n), n = m.houseReady.filter(r => roomOf(r.id) === k).length;
+    return `<button data-action="house-room" data-room="${k}" aria-current="${k === houseRoom}" class="${open ? '' : 'locked'}" aria-label="${ROOMS[k].name}${open ? '' : `, otwiera się od ${ROOMS[k].at} spotkań`}${n ? `, ${n} do odebrania` : ''}"><img src="/img/house/${ROOM_ICON[k]}.png" alt=""><span class="nm">${ROOMS[k].name}</span>${open ? '' : `<span class="lk">${I.lock}</span>`}${n && open ? `<span class="n">${n}</span>` : ''}</button>`;
+  }).join('');
+  const lock = el.querySelector('.room-lock'), open = roomOpen(houseRoom, m.n);
+  lock.hidden = open;
+  if (!open) { houseEditing = false; lock.innerHTML = `<img src="/img/house/${ROOM_ICON[houseRoom]}.png" alt=""><b>${ROOMS[houseRoom].door}</b><span>Otwiera się od ${ROOMS[houseRoom].at} wspólnych spotkań. Jeszcze ${meetings(ROOMS[houseRoom].at - m.n)}.</span>`; }
+  el.querySelector('.h-edit').hidden = !open;
   el.classList.toggle('editing', houseEditing);
   const ed = el.querySelector('.h-edit'); ed.textContent = houseEditing ? 'Gotowe' : 'Urządzaj'; ed.setAttribute('aria-pressed', String(houseEditing));
   el.querySelector('.h-panel').innerHTML = housePanel(m);
   const room = el.querySelector('.room');
   room.style.setProperty('--px', houseScale(el.querySelector('.room-wrap')) + 'px');
   el.querySelector('.room-frame').style.setProperty('--px', room.style.getPropertyValue('--px'));
-  const pos = roomPos();
-  const sig = JSON.stringify([pos, m.outfit]);
+  const all = roomPos(), pos = inRoom(all, houseRoom);
+  const sig = JSON.stringify([houseRoom, pos, m.outfit]);
   if (force || sig !== houseSig) {
     const fresh = freshItem && isHouse(BY_ID[freshItem]) ? freshItem : '';
-    room.innerHTML = roomHTML({ outfit: m.outfit, room: state.rewards?.room, fresh, sel: houseEditing ? houseSel : '' });
+    room.innerHTML = roomHTML({ outfit: m.outfit, room: state.rewards?.room, fresh, sel: houseEditing ? houseSel : '', at: houseRoom });
+    if (houseEnter) { room.classList.remove('room-in', 'from-l', 'from-r'); void room.offsetWidth; room.classList.add('room-in', 'from-' + houseEnter); }
     houseSig = sig;
     if (!overlay) pusz.mount(room.querySelector('.pusz'));
-    life.mount(room.querySelector('.hcat'), pos);
+    life.mount(room.querySelector('.hcat'), pos, houseRoom, houseEnter);
+    houseEnter = '';
     if (fresh) freshItem = '';
   }
   if (!pos[houseSel]) houseSel = '';
   selectInRoom(el, houseEditing ? houseSel : '');
 }
+// ------------------------------------------------------------------ quizzes we dwoje
+// A layer over home, like the house. The server is the referee (quiz-bank.js
+// + /api/quiz/*): this screen shows its view of the session and polls it while
+// a session is open, so both phones move together and a reload resumes.
+let quiz = null, quizTimer = 0, quizSig = '', quizDraft = '', quizResult = false, quizPrompted = '';
+const QUIZ_ICON = { zgodnosc: 'ui/heart-pink.png', znasz: 'ui/ic-quiz.png', wybierasz: 'items/lollipop.png', pary: 'items/butterfly.png' };
+const DEMO_QUIZ = () => ({ id: 'demo', mode: 'wybierasz', state: 'playing', by: 1, you: 1, idx: 2, count: 10, ready: { me: true, partner: true }, partnerName: otherName(), rewarded: false, hits: null,
+  questions: [{ i: 0, text: 'Góry czy morze?', options: ['Góry', 'Morze'], mine: 1, partnerDone: true, reveal: { me: 1, partner: 1 } }, { i: 1, text: 'Kawa czy herbata?', options: ['Kawa', 'Herbata'], mine: 0, partnerDone: true, reveal: { me: 0, partner: 1 } }, { i: 2, text: 'Kot czy pies?', options: ['Kot', 'Pies'], mine: null, partnerDone: true, reveal: null }] });
+async function quizCall(path, data) {
+  if (DEMO) return toast('To tylko podgląd — w prawdziwej parze gracie na dwóch telefonach ♡');
+  try { const r = await request(path, data); quiz = r.quiz; if (r.existing) toast('Macie już otwarty quiz — wracamy do niego'); }
+  catch (e) { if (e.data?.quiz) quiz = e.data.quiz; else toast(h(e.message)); }
+  syncQuiz(true);
+}
+async function pollQuiz() {
+  if (route !== 'quiz' || DEMO || document.hidden) return;
+  try { const r = await request('/api/quiz' + (quiz?.id ? `?id=${encodeURIComponent(quiz.id)}` : '')); const was = quiz; quiz = r.quiz;
+    if (was && quiz && was.idx === quiz.idx && !was.questions[was.idx]?.reveal && quiz.questions[quiz.idx]?.reveal) reactReveal();
+    if (was?.state !== 'done' && quiz?.state === 'done') reactDone();
+  } catch { }
+  syncQuiz();
+}
+function promptQuiz() {
+  const m = model(); if (!m?.quizInvite || route === 'quiz' || overlay || sheet || quizPrompted === m.quiz.id) return;
+  quizPrompted = m.quiz.id; openSheet('quiz-invite');
+}
+const answerText = (q, a) => a === null || a === undefined ? '…' : typeof a === 'number' ? q.options?.[a] ?? '…' : a;
+function quizMenu(m) {
+  const done = m.prog.quizzes;
+  return `<div class="q-hero"><div class="q-cat"></div><div><b>Gracie razem, każde na swoim telefonie</b><p>Odpowiedzi drugiej osoby widać dopiero, gdy oboje odpowiecie.</p></div></div>
+    <div class="q-modes">${Object.entries(QUIZ_MODES).map(([k, v], i) => `<button class="q-mode rise" style="--i:${i}" data-action="quiz-create" data-mode="${k}"><span class="q-ic"><img class="px-art" src="/img/${QUIZ_ICON[k]}" alt=""></span><span class="q-tx"><b>${v.name}</b><small>${v.desc}</small></span><span class="q-n">${v.count} ${plural(v.count, 'pytanie', 'pytania', 'pytań')}</span></button>`).join('')}</div>
+    <p class="q-note">Ukończone quizy: <b>${done}</b>. Pierwszy quiz dnia daje Puszystkowi +5 energii, a do nagród liczą się dwa quizy dziennie.</p>`;
+}
+function quizLobby(q) {
+  const av = (slot, ready, name) => `<div class="q-av${ready ? ' ready' : ''}"><img src="${AV(slot)}" alt=""><b>${h(name)}</b><span>${ready ? `${I.check} Gotowe` : 'Czekamy…'}</span></div>`;
+  const meReady = q.ready.me;
+  return `<div class="q-lobby"><h3>${QUIZ_MODES[q.mode].name}</h3><p>${QUIZ_MODES[q.mode].desc}</p>
+    <div class="q-avs">${av(q.you, q.ready.me, myName())}<span class="q-vs">${I.heart('', 'url(#hg2)')}</span>${av(3 - q.you, q.ready.partner, q.partnerName)}</div>
+    <div class="q-cat"></div>
+    ${meReady ? `<p class="q-wait">Czekamy, aż ${h(q.partnerName)} dołączy. Wyślemy zaproszenie na telefon.</p>` : ''}
+    <div class="row-btns"><button class="btn-soft" data-action="quiz-leave">Anuluj</button>${meReady ? '' : `<button class="btn-main" data-action="quiz-ready">Jestem gotowy/a ${I.heart('', '#fff')}</button>`}</div></div>`;
+}
+function quizPlay(q) {
+  const cur = q.questions[q.idx], kind = QUIZ_MODES[q.mode].kind, done = q.state === 'done';
+  const dots = Array.from({ length: q.count }, (_, i) => `<i class="${i < q.idx || (i === q.idx && cur?.reveal) ? 'on' : ''}${i === q.idx ? ' cur' : ''}"></i>`).join('');
+  let body;
+  if (cur.reveal) {
+    const same = kind !== 'open' && cur.reveal.me === cur.reveal.partner;
+    const verdict = kind === 'open' ? 'Przeczytajcie swoje odpowiedzi ♡' : kind === 'guess' ? (same ? (cur.about === 'me' ? `${h(q.partnerName)} zna Cię świetnie!` : 'Zgadłeś / zgadłaś!') : (cur.about === 'me' ? `${h(q.partnerName)} nie zgadł(a) tym razem` : 'Pudło — teraz już wiesz ♡')) : same ? 'Myślicie tak samo!' : 'Inaczej — i to też jest piękne';
+    body = `<div class="q-reveal${same ? ' same' : ''}">
+      <div class="q-ans me"><img src="${AV(q.you)}" alt=""><small>${kind === 'guess' && cur.about === 'partner' ? 'Twój strzał' : 'Ty'}</small><b>${h(answerText(cur, cur.reveal.me))}</b></div>
+      <div class="q-ans pt"><img src="${AV(3 - q.you)}" alt=""><small>${kind === 'guess' && cur.about === 'me' ? `Strzał: ${h(q.partnerName)}` : h(q.partnerName)}</small><b>${h(answerText(cur, cur.reveal.partner))}</b></div>
+      <p class="q-verdict">${same ? I.hearts2 : ''}${verdict}</p></div>
+      <button class="btn-main" data-action="quiz-next">${done ? 'Zobacz wynik' : 'Dalej'} ${I.heart('', '#fff')}</button>`;
+  } else if (cur.mine !== null) {
+    body = `<div class="q-waiting"><div class="q-cat"></div><p>Twoja odpowiedź: <b>${h(answerText(cur, cur.mine))}</b></p><p class="q-wait">${cur.partnerDone ? 'Odsłaniamy…' : `Czekamy na odpowiedź: ${h(q.partnerName)}…`}</p></div>`;
+  } else if (kind === 'open') {
+    body = `<textarea class="field q-open" maxlength="${MAX_OPEN}" rows="3" placeholder="Napisz kilka słów…">${h(quizDraft)}</textarea><button class="btn-main" data-action="quiz-send">Wyślij ${I.heart('', '#fff')}</button>`;
+  } else {
+    body = `<div class="q-opts${cur.options.length === 2 ? ' two' : ''}">${cur.options.map((o, i) => `<button class="q-opt" data-action="quiz-answer" data-i="${i}">${h(o)}</button>`).join('')}</div>${cur.partnerDone ? `<p class="q-wait">${h(q.partnerName)} już odpowiedział(a) ♡</p>` : ''}`;
+  }
+  return `<div class="q-top"><span class="q-mode-name">${QUIZ_MODES[q.mode].short}</span><span class="q-dots">${dots}</span><button class="q-x" data-action="quiz-leave" aria-label="Zakończ quiz">✕</button></div>
+    <div class="q-card" data-idx="${q.idx}"><small>Pytanie ${q.idx + 1} z ${q.count}${kind === 'guess' ? (cur.about === 'me' ? ' · o Tobie' : ` · zgadujesz: ${h(q.partnerName)}`) : ''}</small><h3>${h(cur.text)}</h3></div>
+    ${body}`;
+}
+function quizDone(q) {
+  const kind = QUIZ_MODES[q.mode].kind, pct = q.hits !== null && q.count ? Math.round(q.hits / q.count * 100) : null;
+  const title = kind === 'open' ? 'Pięknie się rozmawia ♡' : pct >= 80 ? 'Jesteście niesamowicie zgrani!' : pct >= 50 ? 'Dobrze się znacie!' : 'Zawsze jest coś nowego do odkrycia ♡';
+  return `<div class="q-done"><div class="q-cat"></div><h3>${title}</h3>
+    ${pct !== null ? `<div class="q-score"><b>${q.hits}</b><span>z ${q.count}</span></div><p>${kind === 'guess' ? 'trafionych odpowiedzi' : 'takich samych odpowiedzi'}</p>` : `<p>${q.count} ${plural(q.count, 'pytanie', 'pytania', 'pytań')} za wami.</p>`}
+    <p class="q-reward">${q.rewarded ? `${I.heart('', 'url(#hg2)')} Quiz liczy się do nagród${model()?.energy?.today >= 5 ? ' · Puszystek ma więcej energii' : ''}` : 'Dzisiejszy limit nagród za quizy jest już wykorzystany — ale wspólna zabawa liczy się zawsze ♡'}</p>
+    <div class="row-btns"><button class="btn-soft" data-action="quiz-back">Wróć</button><button class="btn-main" data-action="quiz-again">Kolejny quiz</button></div></div>`;
+}
+function reactReveal() {
+  const q = quiz?.questions[quiz.idx]; if (!q?.reveal) return;
+  if (QUIZ_MODES[quiz.mode].kind !== 'open' && q.reveal.me === q.reveal.partner) { pusz.play('hop'); setTimeout(() => burst(document.querySelector('#quiz .q-reveal'), 6, 140), 150); } else pusz.play('giggle');
+}
+function reactDone() { const pct = quiz.hits !== null ? quiz.hits / quiz.count : 1; pusz.celebrate(pct >= .8 ? 'milestone' : 'reward'); }
+function syncQuiz(force = false) {
+  let el = document.getElementById('quiz');
+  if (route !== 'quiz' || !state) {
+    if (el && !el.classList.contains('out')) { el.classList.add('out'); clearInterval(quizTimer); setTimeout(() => el.remove(), 320); if (!overlay) pusz.mount(document.querySelector('.view:not(.leave) .pusz')); }
+    quizSig = ''; return;
+  }
+  const m = model();
+  if (!el || el.classList.contains('out')) {
+    el?.remove();
+    el = document.createElement('div'); el.id = 'quiz'; el.className = 'quiz'; el.setAttribute('role', 'dialog'); el.setAttribute('aria-label', 'Quizy we dwoje');
+    el.innerHTML = `<header class="h-top"><button class="h-back" data-action="quiz-back" aria-label="Wróć">${I.back}</button><h2>Quizy we dwoje</h2></header><div class="q-body"></div>`;
+    document.body.appendChild(el);
+    if (DEMO) quiz = params.has('quiz') ? DEMO_QUIZ() : null;
+    else if (!quiz) { quiz = null; pollQuiz(); }
+    clearInterval(quizTimer); quizTimer = setInterval(pollQuiz, 1500);
+  }
+  if (quiz && ['cancelled'].includes(quiz.state)) { quiz = null; toast('Quiz został przerwany'); }
+  const phase = !quiz ? 'menu' : quiz.state === 'lobby' ? 'lobby' : quiz.state === 'done' && (quizResult || quiz.questions[quiz.idx]?.reveal == null) ? 'done' : 'play';
+  const sig = JSON.stringify([phase, quiz, quizResult]);
+  if (!force && sig === quizSig) return;
+  // keep what is being typed when only the partner's status changed
+  const ta = el.querySelector('textarea'); if (ta) quizDraft = ta.value;
+  if (!force && ta && document.activeElement === ta && phase === 'play' && quiz.questions[quiz.idx]?.mine === null && !quiz.questions[quiz.idx]?.reveal) { quizSig = sig; return; }
+  quizSig = sig;
+  const body = el.querySelector('.q-body');
+  body.className = `q-body qp-${phase}`;
+  body.innerHTML = phase === 'menu' ? quizMenu(m) : phase === 'lobby' ? quizLobby(quiz) : phase === 'done' ? quizDone(quiz) : quizPlay(quiz);
+  const slot = body.querySelector('.q-cat');
+  if (slot && !overlay) { slot.innerHTML = puszystekHTML({ pose: phase === 'done' ? 'cheer' : 'home', box: [0, 0, 242], outfit: m.outfit.filter(id => !isHouse(BY_ID[id]) && !['decor', 'theme'].includes(BY_ID[id]?.slot)), label: 'Puszystek — dotknij', stagePx: () => 'left:0;top:0;width:100%' }); pusz.mount(slot.querySelector('.pusz')); }
+}
+
+// moving between rooms: the room slides out, the next one slides in and
+// Puszystek walks in through the door on that side
+function goRoom(k, dir) {
+  if (!ROOMS[k] || k === houseRoom) return;
+  const i = ROOM_ORDER.indexOf(houseRoom), j = ROOM_ORDER.indexOf(k);
+  dir ??= j > i ? 1 : -1;
+  houseRoom = k; houseSel = ''; lastMove = null; houseEnter = dir > 0 ? 'r' : 'l';
+  try { localStorage.setItem('razem-room', k); } catch { }
+  if (!roomOpen(k, model()?.n)) houseEditing = false;
+  const el = document.getElementById('house');
+  if (!el || reduced.matches) { houseEnter = ''; return syncHouse(true); }
+  el.classList.add(dir > 0 ? 'room-out-l' : 'room-out-r');
+  setTimeout(() => { el.classList.remove('room-out-l', 'room-out-r'); syncHouse(true); el.querySelector('.h-rooms [aria-current="true"]')?.scrollIntoView({ inline: 'center', block: 'nearest' }); }, 200);
+}
+// a horizontal swipe on the room (outside the editor) goes to the next room
+function swipeRooms(roomEl) {
+  let s = null;
+  roomEl.addEventListener('pointerdown', e => { if (!houseEditing) s = [e.clientX, e.clientY, Date.now()]; });
+  roomEl.addEventListener('pointerup', e => {
+    if (!s || houseEditing) return; const dx = e.clientX - s[0], dy = e.clientY - s[1], dt = Date.now() - s[2]; s = null;
+    if (Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy) * 1.5 && dt < 700) { const i = ROOM_ORDER.indexOf(houseRoom) - Math.sign(dx); if (ROOM_ORDER[i]) goRoom(ROOM_ORDER[i], -Math.sign(dx)); }
+  });
+}
 addEventListener('resize', () => { const el = document.getElementById('house'); if (el) { const px = houseScale(el.querySelector('.room-wrap')) + 'px'; el.querySelector('.room').style.setProperty('--px', px); el.querySelector('.room-frame').style.setProperty('--px', px); placeTools(el); } });
 
 // ------------------------------------------------------------------ render + transitions
-const ROUTES = { '': 'home', '#/nagrody': 'rewards', '#/spotkanie': 'detect', '#/kolekcja': 'collection', '#/domek': 'house' };
-const HASH = { home: '', rewards: '#/nagrody', detect: '#/spotkanie', collection: '#/kolekcja', house: '#/domek' };
-const ORDER = { onboarding: 0, home: 0, house: 0, rewards: 1, detect: 2, collection: 3 };
+const ROUTES = { '': 'home', '#/nagrody': 'rewards', '#/spotkanie': 'detect', '#/kolekcja': 'collection', '#/domek': 'house', '#/quiz': 'quiz' };
+const HASH = { home: '', rewards: '#/nagrody', detect: '#/spotkanie', collection: '#/kolekcja', house: '#/domek', quiz: '#/quiz' };
+const ORDER = { onboarding: 0, home: 0, house: 0, quiz: 0, rewards: 1, detect: 2, collection: 3 };
+const LAYERS = ['house', 'quiz'];
 const routeFromHash = () => ROUTES[location.hash] || 'home';
 
 function render(next, animate = false) {
-  const prev = route === 'house' ? 'home' : route;
+  const prev = LAYERS.includes(route) ? 'home' : route;
   route = state ? next : 'onboarding';
   if (!root.querySelector('.app')) shell();
   const app = root.querySelector('.app');
   // the house is a layer over the home screen (opened straight from #/domek: home first)
-  if (route === 'house' && !root.querySelector('.view')) { route = 'home'; render('home'); route = 'house'; return syncHouse(); }
-  syncHouse();
-  if (route === 'house') { settleHeader(); return; }
+  if (LAYERS.includes(route) && !root.querySelector('.view')) { const r = route; route = 'home'; render('home'); route = r; syncHouse(); return syncQuiz(); }
+  syncHouse(); syncQuiz();
+  if (LAYERS.includes(route)) { settleHeader(); return; }
   app.dataset.route = route;
   const views = document.getElementById('views');
   const m = model();
@@ -662,7 +855,8 @@ function render(next, animate = false) {
   const stage = app.querySelector('.stage');
   stage.style.height = '';
   if (route === 'collection') requestAnimationFrame(() => { const w = v.querySelector('.coll-wrap'); if (w) stage.style.height = Math.max(stage.offsetHeight, w.offsetTop + w.offsetHeight) + 'px'; });
-  if (!overlay && route !== 'house') pusz.mount(v.querySelector('.pusz'));
+  if (!overlay && !LAYERS.includes(route)) pusz.mount(v.querySelector('.pusz'));
+  pusz.setMood(m?.energy?.rest ? 'calm' : m?.energy?.mood || 'happy'); life.mood = () => pusz.mood;
   settleHeader();
   settle(v, animate || !old.length);
   freshItem = '';
@@ -850,14 +1044,14 @@ function itemSheet(r, m) {
   const st = itemStatus(r, m), set = SET_SLOTS.includes(r.slot), rar = rarityOf(r), badge = isBadge(r);
   const fx = justChanged?.id === r.id ? ` just-${justChanged.kind}` : '';
   const inSlot = r.slot ? m.outfit.map(id => BY_ID[id]).find(x => x?.slot === r.slot) : null;
-  const previewOutfit = r.slot ? sanitizeOutfit([...m.outfit, r.id], Math.max(m.n, r.at), [...m.opened, r.hidden].filter(Boolean)) : m.outfit;
+  const previewOutfit = r.slot ? sanitizeOutfit([...m.outfit, r.id], ALL_PROG, [...m.opened, r.hidden].filter(Boolean)) : m.outfit;
   const stage = isHouse(r) ? `<div class="ri-stage house-stage${st === 'locked' ? ' locked' : ''}"><div class="ri-art">${houseArt(r.id, 150)}</div></div>`
     : badge ? `<div class="ri-stage medal-stage${st === 'locked' ? ' locked' : ''}"><span class="ri-rays"></span><div class="ri-art">${badgeArt(r, 'big')}</div><span class="ri-shelf"></span></div>`
     : r.reveals ? `<div class="ri-stage gift-open"><span class="ri-rays"></span><div class="ri-art"><img src="/img/tile-gift.webp" alt=""${TILE_FILTER[r.id] ? ` style="filter:${TILE_FILTER[r.id]}"` : ''}></div></div>`
       : r.slot ? `<div class="ri-stage preview ${r.slot === 'theme' ? r.id : ''}"><img class="bg" src="/img/unlock-rewards.webp" alt=""><div class="ri-art">${puszystekHTML({ pose: 'home', box: [0, 0, 242], outfit: previewOutfit, label: 'Podgląd', stagePx: (x, y, w) => `left:calc(50% - ${dp(w / S * .38)});bottom:${dp(-4)};width:${dp(w / S * .76)}` })}</div></div>`
         : `<div class="ri-stage"><div class="ri-art">${artHTML(r)}</div></div>`;
-  const have = Math.min(m.n, r.at);
-  const cond = `<div class="cond ${m.n >= r.at ? 'met' : ''}"><span class="ck">${m.n >= r.at ? I.check : I.lock}</span><div><b>${meetings(r.at)} razem</b><small>${m.n >= r.at ? 'Warunek spełniony' : `Macie ${have} z ${r.at}, jeszcze ${meetings(r.at - m.n)}`}</small><div class="bar"><i style="width:${(have / r.at * 100).toFixed(1)}%"></i></div></div></div>`;
+  const got = progOf(r, m), have = Math.min(got, r.at);
+  const cond = `<div class="cond ${got >= r.at ? 'met' : ''}"><span class="ck">${got >= r.at ? I.check : I.lock}</span><div><b>${(r.source || 'meetings') === 'meetings' ? `${meetings(r.at)} razem` : units(r, r.at)}</b><small>${got >= r.at ? 'Warunek spełniony' : `Macie ${have} z ${r.at}, jeszcze ${units(r, r.at - got)}`}</small><div class="bar"><i style="width:${(have / r.at * 100).toFixed(1)}%"></i></div></div></div>`;
   // where the item is now (an elegant status, not a button)
   const house = isHouse(r);
   const status = st === 'worn' ? `<div class="ri-status on">${r.slot === 'pin' ? I.pinIc : I.wear}<span>${house ? 'Stoi w domku Puszystka' : r.slot === 'pin' ? 'Przypięta na liczniku' : set ? 'Ustawione przy Puszystku' : 'Puszystek ma to na sobie'}</span>${I.check}</div>`
@@ -933,6 +1127,7 @@ function renderSheet(quiet = false) {
     </div>
     <p class="sec-h">Puszystek i domek</p><div class="sec">
       ${row(ic('bag', 'gold'), `Ekwipunek Puszystka${m?.ready.length ? `<span class="dot">${m.ready.length}</span>` : ''}`, 'Korony, kokardki, efekty i odznaki.', '<button class="btn-soft" data-action="collection">Otwórz</button>')}
+      ${row(ic('heart', 'mint'), 'Energia Puszystka', m?.energy ? `${Math.round(m.energy.value)}/100 · ${m.energy.rest ? 'odpoczywa' : MOOD[m.energy.mood]}` : 'Rośnie po spotkaniach i quizach.', '<button class="btn-soft" data-action="energy">Pokaż</button>')}
       ${row(ic('house', 'gold'), `Domek Puszystka${m?.houseReady.length ? `<span class="dot">${m.houseReady.length}</span>` : ''}`, 'Meble i dekoracje do wspólnego pokoju.', '<button class="btn-soft" data-action="house">Wejdź</button>')}
     </div>
     <p class="sec-h">Konto</p><div class="sec">
@@ -957,6 +1152,9 @@ function renderSheet(quiet = false) {
   else if (sheet === 'nearby') c = `<h2>${m.pr.partnerConfirm ? `${h(otherName())} potwierdza spotkanie` : 'Wygląda na to, że jesteście razem!'}</h2><p>${h(myName())} i ${h(otherName())}: ok. ${fmtDist(m.pr.distance)} od siebie. ${m.pr.partnerConfirm ? 'Potwierdzasz, że jesteście razem?' : m.pr.needsBoth ? 'GPS jest mniej dokładny, więc potwierdźcie spotkanie oboje.' : 'Zaliczamy spotkanie?'}</p>
     <div class="row-btns"><button class="btn-soft" data-action="close">Nie teraz</button><button class="btn-main" data-action="confirm-meeting">${m.pr.myConfirm ? 'Potwierdzone' : 'Jesteśmy razem'} ${I.heart('', '#fff')}</button></div>`;
   else if (sheet === 'check') c = checkSheet(m);
+  else if (sheet === 'energy') c = energySheet(m);
+  else if (sheet === 'quiz-invite') c = `<div class="q-invite"><img class="px-art" src="/img/ui/ic-quiz.png" alt=""><h2>${h(otherName())} zaprasza do quizu</h2><p>„${QUIZ_MODES[m.quiz?.mode]?.name || 'Quiz'}”. ${h(QUIZ_MODES[m.quiz?.mode]?.desc || '')}</p></div>
+    <div class="row-btns"><button class="btn-soft" data-action="close">Później</button><button class="btn-main" data-action="quiz-join">Dołączam ${I.heart('', '#fff')}</button></div>`;
   else if (sheet === 'map-share') c = `<h2>Pokazywanie na mapie</h2><p>Mapa zawsze pokazuje Tobie Twoją pozycję. ${h(otherName())} zobaczy Cię na mapie tylko wtedy, gdy to włączysz. To osobna zgoda od wykrywania spotkań.</p>
     <p>Pozycja jest widoczna tylko wtedy, gdy Razem jest otwarte, a starsza niż 2 minuty jest oznaczona jako nieaktualna. Po 15 minutach znika z serwera.</p>
     <div class="row-btns"><button class="btn-soft" data-action="close">Zamknij</button><button class="btn-main" data-action="map-share-toggle">${mapView?.me?.sharing ? 'Przestań mnie pokazywać' : `Pokazuj mnie ${h(otherName())}`}</button></div>`;
@@ -1002,7 +1200,7 @@ async function changeOutfit(op, id) {
   const r = BY_ID[id], cur = model().outfit.find(x => BY_ID[x]?.slot === r.slot) || null;
   if (DEMO) {
     demoOutfit = op === 'equip' ? [...demoOutfit.filter(x => x !== cur), id] : demoOutfit.filter(x => x !== id);
-    state.rewards.equipped = sanitizeOutfit(demoOutfit, state.count, demoOpened); state.rewards.version++;
+    state.rewards.equipped = sanitizeOutfit(demoOutfit, state.progress, demoOpened); state.rewards.version++;
     return true;
   }
   try { state = await request('/api/equip', { op, id, expect: cur }); return true; }
@@ -1021,7 +1219,7 @@ async function claim(id) {
     demoClaimed = [...new Set([...state.rewards.claimed, id, ...(r.reveals ? [r.reveals] : [])])];
     if (r.reveals) demoOpened = [...demoOpened, id];
     state.rewards.claimed = demoClaimed; state.rewards.opened = demoOpened;
-    if (r.slot && r.slot !== 'pin' && !model().outfit.some(x => BY_ID[x]?.slot === r.slot)) { demoOutfit = [...demoOutfit, id]; state.rewards.equipped = sanitizeOutfit(demoOutfit, state.count, demoOpened); }
+    if (r.slot && r.slot !== 'pin' && !model().outfit.some(x => BY_ID[x]?.slot === r.slot)) { demoOutfit = [...demoOutfit, id]; state.rewards.equipped = sanitizeOutfit(demoOutfit, state.progress, demoOpened); }
     return;
   }
   state = await request('/api/claim', { id });
@@ -1056,7 +1254,21 @@ async function act(action, el) {
       go('house');
     }
     else if (action === 'house-back') go('home');
-    else if (action === 'house-edit') { houseEditing = !houseEditing; if (!houseEditing) houseSel = ''; syncHouse(true); }
+    else if (action === 'energy') openSheet('energy');
+    else if (action === 'energy-rest') { if (DEMO) return toast('To tylko podgląd'); state = await request('/api/energy-rest', { on: !state.energy?.rest }); saveState(); renderSheet(true); render(route); toast(state.energy?.rest ? 'Puszystek odpoczywa — energia nie spada ♡' : 'Koniec odpoczynku ♡'); }
+    else if (action === 'quiz') go('quiz');
+    else if (action === 'quiz-back') { quizResult = false; go('home'); }
+    else if (action === 'quiz-create') await quizCall('/api/quiz/create', { mode: el.dataset.mode });
+    else if (action === 'quiz-join') { closeSheet(); if (route !== 'quiz') go('quiz'); await quizCall('/api/quiz/ready', { id: state.quiz?.id || quiz?.id }); }
+    else if (action === 'quiz-ready') await quizCall('/api/quiz/ready', { id: quiz.id });
+    else if (action === 'quiz-answer') { const q = quiz?.questions[quiz.idx]; if (!q || q.mine !== null) return; el.classList.add('picked'); await quizCall('/api/quiz/answer', { id: quiz.id, idx: quiz.idx, answer: Number(el.dataset.i) }); }
+    else if (action === 'quiz-send') { const t = document.querySelector('#quiz textarea')?.value.trim(); if (!t) return toast('Napisz kilka słów ♡'); quizDraft = ''; await quizCall('/api/quiz/answer', { id: quiz.id, idx: quiz.idx, answer: t.slice(0, MAX_OPEN) }); }
+    else if (action === 'quiz-next') { if (quiz.state === 'done') { quizResult = true; syncQuiz(true); } else await quizCall('/api/quiz/next', { id: quiz.id, idx: quiz.idx }); }
+    else if (action === 'quiz-leave') { if (quiz && ['lobby', 'playing'].includes(quiz.state)) await quizCall('/api/quiz/leave', { id: quiz.id }); quiz = null; quizResult = false; syncQuiz(true); }
+    else if (action === 'quiz-again') { quiz = null; quizResult = false; syncQuiz(true); }
+    else if (action === 'house-room') goRoom(el.dataset.room);
+    else if (action === 'house-door') { const i = ROOM_ORDER.indexOf(houseRoom) + Number(el.dataset.dir); goRoom(ROOM_ORDER[(i + ROOM_ORDER.length) % ROOM_ORDER.length], Number(el.dataset.dir)); }
+    else if (action === 'house-edit') { if (!roomOpen(houseRoom, model().n)) return toast('Ten pokój jest jeszcze zamknięty'); houseEditing = !houseEditing; if (!houseEditing) houseSel = ''; syncHouse(true); }
     else if (action === 'house-cat') { houseCat = el.dataset.cat; syncHouse(); document.querySelector('.hp-tabs [aria-selected="true"]')?.scrollIntoView({ inline: 'center', block: 'nearest', behavior: reduced.matches ? 'auto' : 'smooth' }); }
     else if (action === 'house-pick') {
       const r = BY_ID[el.dataset.id], st = itemStatus(r, model());
@@ -1158,7 +1370,7 @@ async function act(action, el) {
 }
 
 root.addEventListener('click', e => { const b = e.target.closest('[data-action]'); if (b) { e.stopPropagation(); act(b.dataset.action, b); } });
-document.addEventListener('click', e => { if (!e.target.closest('#sheet, #ov, #house, #mapfull')) return; const b = e.target.closest('[data-action]'); if (b) act(b.dataset.action, b); });
+document.addEventListener('click', e => { if (!e.target.closest('#sheet, #ov, #house, #quiz, #mapfull')) return; const b = e.target.closest('[data-action]'); if (b) act(b.dataset.action, b); });
 document.addEventListener('submit', async e => {
   e.preventDefault(); const form = e.target; if (working) return; working = true;
   const btn = form.querySelector('[type=submit]'); if (btn) btn.disabled = true;
@@ -1219,6 +1431,7 @@ async function refresh() {
     else if (next.count !== old) afterCountChange(old);
     else { const fresh = newRewards(); if (fresh.length) showRewards(fresh); }
     promptMeeting();
+    promptQuiz();
   } catch (err) {
     if (err.status === 401) { signOut(); stopWatch(); render('onboarding'); }
     else console.warn('Synchronizacja:', err.message);
@@ -1241,7 +1454,7 @@ const GEO_TEXT = { denied: 'Brak zgody na lokalizację. Na iPhonie: Ustawienia �
 // a fresh reading; if GPS is slow (indoors), the last one still counts when it is under a minute old
 async function freshFix() {
   try { lastFix = await fix({ timeout: 12000 }); geoError = ''; return lastFix; }
-  catch (e) { if (e?.code !== 1 && lastFix && Date.now() - lastFix.timestamp < 60000) return lastFix; geoError = geoErr(e); const err = new Error(GEO_TEXT[geoError]); err.geo = geoError; throw err; }
+  catch (e) { if (e?.code !== 1 && lastFix && Date.now() - lastFix.timestamp < 100000) return lastFix; /* the server still judges freshness (2 min) */ geoError = geoErr(e); const err = new Error(GEO_TEXT[geoError]); err.geo = geoError; throw err; }
 }
 function onFix(pos) { lastFix = pos; if (geoError) { geoError = ''; render(route); } send(); }
 function onGeoError(e) {
@@ -1366,7 +1579,7 @@ async function togglePush(on) {
 
 window.addEventListener('hashchange', () => { if (state) render(routeFromHash(), true); });
 window.addEventListener('popstate', () => { if (state && !location.hash) render('home', true); });
-document.addEventListener('keydown', e => { if (e.key === 'Escape') { if (overlay) closeOverlay(); else if (sheet) closeSheet(); else if (route === 'house') go('home'); } });
+document.addEventListener('keydown', e => { if (e.key === 'Escape') { if (overlay) closeOverlay(); else if (sheet) closeSheet(); else if (LAYERS.includes(route)) go('home'); } });
 // back to the app (unlock, app switcher, tab, network): sync right away
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') { if (token && syncOn) refresh(); startWatch(); freshSend(); }
