@@ -55,3 +55,9 @@ CREATE TABLE IF NOT EXISTS member_tokens (token_hash TEXT PRIMARY KEY, member_id
 CREATE TABLE IF NOT EXISTS member_recovery (member_id TEXT PRIMARY KEY REFERENCES members(id), code_hash TEXT NOT NULL UNIQUE, created_at INTEGER NOT NULL);
 
 CREATE TABLE IF NOT EXISTS push_subs (endpoint TEXT PRIMARY KEY, member_id TEXT NOT NULL REFERENCES members(id), p256dh TEXT NOT NULL, auth TEXT NOT NULL, created_at INTEGER NOT NULL);
+
+-- stage 7: couple quizzes and Puszystek energy (columns are added by migrations/0006 and ensureSchema)
+CREATE TABLE IF NOT EXISTS quiz_sessions (id TEXT PRIMARY KEY, pair_id TEXT NOT NULL REFERENCES pairs(id), mode TEXT NOT NULL, questions TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'lobby', created_by INTEGER NOT NULL, created_at INTEGER NOT NULL, ready1 INTEGER NOT NULL DEFAULT 0, ready2 INTEGER NOT NULL DEFAULT 0, idx INTEGER NOT NULL DEFAULT 0, started_at INTEGER, finished_at INTEGER, day TEXT, hits INTEGER, rewarded INTEGER NOT NULL DEFAULT 0);
+CREATE INDEX IF NOT EXISTS ix_quiz_pair ON quiz_sessions(pair_id, created_at);
+CREATE TABLE IF NOT EXISTS quiz_answers (session_id TEXT NOT NULL REFERENCES quiz_sessions(id), idx INTEGER NOT NULL, slot INTEGER NOT NULL, answer TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY (session_id, idx, slot));
+CREATE TABLE IF NOT EXISTS energy_events (pair_id TEXT NOT NULL REFERENCES pairs(id), key TEXT NOT NULL, delta INTEGER NOT NULL, kind TEXT NOT NULL, day TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY (pair_id, key));
