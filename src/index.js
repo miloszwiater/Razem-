@@ -3,6 +3,7 @@ import { ITEMS as ROOM_ITEMS, arrange, check as checkPlacement, movable, roomOpe
 import { RULES, RADII, verdict, transition, haversine } from './proximity.js';
 import { pushReady, sendPush } from './push.js';
 import { streakOf } from '../public/streak.js';
+import { AVATAR_TABLES, avatarUrl, avatarDeletes, quota as avatarQuota, generate as avatarGenerate, choose as avatarChoose, remove as avatarRemove, serve as avatarServe } from './avatar.js';
 import { MODES as QUIZ_MODES, MAX_OPEN, pick as pickQuestions, aboutSlot, score as quizScore, validQuestion } from '../public/quiz-bank.js';
 
 const bad=(message,status=400)=>Response.json({error:message},{status,headers:{'Cache-Control':'no-store'}});
@@ -30,10 +31,11 @@ async function ensureSchema(env){
   for(const [c,def] of list){if(cols.has(c))continue;try{await env.DB.prepare(`ALTER TABLE ${table} ADD COLUMN ${c} ${def}`).run()}catch(e){if(!/duplicate column/i.test(String(e?.message)))throw e}}
  };
  await addColumns('pair_prefs',[['claimed',"TEXT NOT NULL DEFAULT '[]'"],['version','INTEGER NOT NULL DEFAULT 0'],['last_change','TEXT'],['room',"TEXT NOT NULL DEFAULT '{}'"],['achieved',"TEXT NOT NULL DEFAULT '{}'"]]);
- await addColumns('members',[['geo_on','INTEGER NOT NULL DEFAULT 0'],['ping_at','INTEGER'],['map_on','INTEGER NOT NULL DEFAULT 0'],['ghost_until','INTEGER']]);
+ await addColumns('members',[['geo_on','INTEGER NOT NULL DEFAULT 0'],['ping_at','INTEGER'],['map_on','INTEGER NOT NULL DEFAULT 0'],['ghost_until','INTEGER'],['avatar_key','TEXT']]);
  await addColumns('pairs',[['confirm1_at','INTEGER'],['confirm2_at','INTEGER'],['notified_near_at','INTEGER'],['tz','TEXT']]);
  await addColumns('pair_prefs',[['energy_rest','INTEGER NOT NULL DEFAULT 0'],['energy_since','TEXT'],['streak_best','INTEGER NOT NULL DEFAULT 0']]);
  await addColumns('meetings',[['session_key','TEXT']]);
+ await env.DB.batch(AVATAR_TABLES.map(q=>env.DB.prepare(q)));
  await env.DB.batch([
   env.DB.prepare('CREATE TABLE IF NOT EXISTS member_tokens (token_hash TEXT PRIMARY KEY, member_id TEXT NOT NULL REFERENCES members(id), created_at INTEGER NOT NULL)'),
   env.DB.prepare('CREATE TABLE IF NOT EXISTS member_recovery (member_id TEXT PRIMARY KEY REFERENCES members(id), code_hash TEXT NOT NULL UNIQUE, created_at INTEGER NOT NULL)'),
@@ -219,7 +221,7 @@ async function member(req,env){const token=(req.headers.get('Authorization')||''
 
 // ------------------------------------------------------------------ proximity + push helpers
 const PAIR_COLS='first_met_at,created_at,invite_code,active_since,active_recorded,apart_since,confirm1_at,confirm2_at,notified_near_at';
-const MEMBER_COLS='id,display_name,slot,geo_on,ping_at,location_at,latitude,longitude,accuracy,map_on,ghost_until';
+const MEMBER_COLS='id,display_name,slot,geo_on,ping_at,location_at,latitude,longitude,accuracy,map_on,ghost_until,avatar_key';
 // ghost mode: a pause in sharing my position (map and meeting detection) until a time
 const GHOST_FOREVER=4102444800000; // 2100-01-01: "until I switch it off"
 const ghostOn=(r,now=Date.now())=>!!r&&Number(r.ghost_until||0)>now;
@@ -296,7 +298,7 @@ async function state(env,m){
  const prog=await progressOf(env,m.pair_id),n=prog.meetings;
  const p=await prefs(env,m.pair_id);
  const subs=(await env.DB.prepare('SELECT COUNT(*) AS n FROM push_subs WHERE member_id=?').bind(m.id).first()).n;
- return {you:m.slot,ghostUntil:ghostOn(me)?Number(me.ghost_until):null,members:rows.map(x=>({name:x.display_name,slot:x.slot,locationActive:!!x.geo_on&&Number(x.location_at||0)>Date.now()-RULES.FRESH})),code:rows.length<2?pair.invite_code:null,firstMetAt:pair.first_met_at,createdAt:pair.created_at,count:n,meetings:meets.results||[],together:v.stage==='together'||v.stage==='recorded',connected:rows.length===2,
+ return {you:m.slot,ghostUntil:ghostOn(me)?Number(me.ghost_until):null,members:rows.map(x=>({name:x.display_name,slot:x.slot,avatar:avatarUrl(x.avatar_key),locationActive:!!x.geo_on&&Number(x.location_at||0)>Date.now()-RULES.FRESH})),code:rows.length<2?pair.invite_code:null,firstMetAt:pair.first_met_at,createdAt:pair.created_at,count:n,meetings:meets.results||[],together:v.stage==='together'||v.stage==='recorded',connected:rows.length===2,
   progress:prog,energy,quiz:await quizSummary(env,m),streak:await streakView(env,m.pair_id),
   rewards:{unlocked:unlockedIds(prog),claimed:p.claimed.filter(x=>claimable(BY_ID[x],prog,p.opened)),equipped:sanitizeOutfit(p.equipped,prog,p.opened,p.claimed),opened:p.opened,version:p.version,lastChange:p.lastChange,room:p.room,achieved:p.achieved},
   proximity:proximityOut(v,me),push:{available:pushReady(env),key:env.VAPID_PUBLIC||null,subscribed:subs>0}};
@@ -328,6 +330,8 @@ async function api(req,env,path,ctx){
   const t=randomToken();await env.DB.prepare('INSERT INTO member_tokens(token_hash,member_id,created_at) VALUES (?,?,?)').bind(await sha(t),r.member_id,Date.now()).run();
   return ok({token:t},201);
  }
+ // a chosen avatar picture: the key is random and changes with every new avatar
+ if(method==='GET'&&path.startsWith('/api/avatar-img/'))return await avatarServe(env,path.slice(16))||bad('Nie znaleziono.',404);
  const m=await member(req,env);if(!m)return bad('Sesja wygasła lub nie została znaleziona.',401);
  // the pair's day boundaries follow the phones' time zone (sent with every request)
  const tz=req.headers.get('X-Razem-TZ');if(tz&&tz!==m.tz&&validTz(tz))await env.DB.prepare('UPDATE pairs SET tz=? WHERE id=?').bind(tz,m.pair_id).run();
@@ -566,9 +570,19 @@ async function api(req,env,path,ctx){
   const me={...m,ghost_until:until};
   return ok({...await state(env,me),map:await mapView(env,me)});
  }
+ // personal avatars (src/avatar.js): the selfie is never stored, only the chosen picture
+ if(path.startsWith('/api/avatar/')){
+  try{
+   if(method==='GET'&&path==='/api/avatar/quota')return ok(await avatarQuota(env,m.id));
+   if(method==='POST'&&path==='/api/avatar/generate')return ok(await avatarGenerate(env,m,await body(req)));
+   if(method==='POST'&&path==='/api/avatar/choose'){await avatarChoose(env,m,await body(req));return ok(await state(env,m))}
+   if(method==='POST'&&path==='/api/avatar/delete'){await avatarRemove(env,m);return ok(await state(env,m))}
+  }catch(e){if(e?.status)return Response.json({error:e.message,code:e.code},{status:e.status,headers:{'Cache-Control':'no-store'}});throw e}
+ }
  if(method==='POST'&&path==='/api/unpair'){
   // End the pair for good: every row of this pair is deleted for both people
-  // (meetings, rewards, house, quizzes, energy, positions, push, sign-in codes).
+  // (meetings, rewards, house, quizzes, energy, positions, push, sign-in codes,
+  // both people's avatars and drafts).
   // Both phones' sessions stop working; nothing can be restored.
   const b=await body(req);if(b?.confirm!=='ROZŁĄCZ')return bad('Potwierdź rozłączenie.');
   const pid=m.pair_id,inPair='SELECT id FROM members WHERE pair_id=?';
@@ -578,6 +592,7 @@ async function api(req,env,path,ctx){
    env.DB.prepare('DELETE FROM energy_events WHERE pair_id=?').bind(pid),
    env.DB.prepare('DELETE FROM meetings WHERE pair_id=?').bind(pid),
    env.DB.prepare('DELETE FROM pair_prefs WHERE pair_id=?').bind(pid),
+   ...avatarDeletes(env,inPair,pid),
    env.DB.prepare(`DELETE FROM push_subs WHERE member_id IN (${inPair})`).bind(pid),
    env.DB.prepare(`DELETE FROM member_tokens WHERE member_id IN (${inPair})`).bind(pid),
    env.DB.prepare(`DELETE FROM member_recovery WHERE member_id IN (${inPair})`).bind(pid),

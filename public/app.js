@@ -9,6 +9,7 @@ import { medalSVG } from './medals.js';
 import { ART as HOUSE_ART, ITEMS as ROOM_ITEMS, ROOM, ROOMS, ROOM_ORDER, DEFAULT_NAMES, roomHTML, RoomEditor, HouseLife, positions, placedIds, freeSpot, roomOf } from './house.js';
 import { check as roomCheck, movable, inRoom, roomOpen, applyMove } from './room.js';
 import { PairMap } from './map.js';
+import { readPhoto } from './avatar.js';
 import { MODES as QUIZ_MODES, MAX_OPEN } from './quiz-bank.js';
 
 const root = document.getElementById('app');
@@ -240,7 +241,22 @@ function taglineHTML() {
   const names = b ? `<b>${h(a)}</b>${I.heart('tl-heart')}<b>${h(b)}</b>` : `<b>${h(a || myName())}</b>${I.heart('tl-heart')}<b class="wait">czeka na drugą osobę</b>`;
   return `<span class="pair" title="${h(a || '')}${b ? ' i ' + h(b) : ''}">${names}</span><span class="slogan"><i>|</i>Zawsze razem lepiej</span>`;
 }
+// Own avatars over the portraits drawn into the header plates (slot 1 left, slot 2 right).
+const shownAv = {};
+function settleAvatars() {
+  for (const [slot, cls] of [[1, 'a'], [2, 'b']]) {
+    const el = document.querySelector(`.hdr .hdr-av.${cls}`); if (!el) continue;
+    const src = state?.members?.find(x => x.slot === slot)?.avatar || '';
+    if (el.dataset.src === src) continue;
+    el.dataset.src = src;
+    el.innerHTML = src ? `<img src="${h(src)}" alt="">` : '';
+    // a gentle entrance when a new avatar arrives (not on the first paint)
+    if (src && shownAv[slot] !== undefined && !reduced.matches) { el.classList.remove('pop'); void el.offsetWidth; el.classList.add('pop'); }
+    shownAv[slot] = src;
+  }
+}
 function settleHeader() {
+  settleAvatars();
   const t = document.querySelector('.tagline'); if (!t) return;
   const html = taglineHTML(); if (t.dataset.html !== html) { t.innerHTML = html; t.dataset.html = html; }
   t.classList.remove('short'); if (t.scrollWidth > t.clientWidth + 1) t.classList.add('short');
@@ -258,6 +274,7 @@ function shell() {
         <p class="tagline">${taglineHTML()}</p>
         <button class="gear" data-action="settings" aria-label="Ustawienia">${I.gear}</button>
         ${I.heart('link-heart')}
+        <span class="hdr-av a" aria-hidden="true"></span><span class="hdr-av b" aria-hidden="true"></span>
         <span class="avatar-hit a" title="${h(state?.members?.[0]?.name || '')}"></span><span class="avatar-hit b" title="${h(state?.members?.[1]?.name || '')}"></span>
       </header>
     </div>
@@ -420,7 +437,8 @@ function pillState(m) {
 // comes from this phone's last reading; my partner's only if they share it.
 const pairMap = new PairMap();
 let mapView = null, mapTimer = 0;
-const AV = slot => slot === 1 ? '/img/chip-boy.png' : '/img/chip-girl.png';
+// a person's avatar: their own picture when they made one, otherwise the default
+const AV = slot => state?.members?.find(x => x.slot === slot)?.avatar || (slot === 1 ? '/img/chip-boy.png' : '/img/chip-girl.png');
 function mapChip(m) {
   const p = m?.pr || {};
   if (DEMO) return 'Dokładność: ±12 m';
@@ -478,7 +496,7 @@ function viewDetect(m) {
       <div class="map-slot" aria-label="Mapa: wasze pozycje"></div>
       <span class="glow"></span>
       ${c.together ? I.heart('map-heart') : ''}
-      <div class="chips ${c.apart ? 'apart' : ''}"><img class="boy" src="/img/chip-boy.png" alt="${h(state?.members?.[0]?.name || '')}"><img class="girl" src="/img/chip-girl.png" alt="${h(state?.members?.[1]?.name || '')}"></div>
+      <div class="chips ${c.apart ? 'apart' : ''}"><img class="boy" src="${h(AV(1))}" alt="${h(state?.members?.[0]?.name || '')}"><img class="girl" src="${h(AV(2))}" alt="${h(state?.members?.[1]?.name || '')}"></div>
       <div class="map-bubble">${c.together ? `Jesteście razem! ${I.hearts2}` : 'Jeszcze osobno'}</div>
       <button class="locate" data-action="locate" aria-label="Odśwież lokalizację">${I.locate}</button>
       <button class="map-btn fit" data-action="map-fit" aria-label="Pokaż nas oboje">${I.heart('', 'url(#hg2)')}</button>
@@ -1060,6 +1078,7 @@ function newRewards() {
 // ------------------------------------------------------------------ sheets
 function openSheet(name) { sheet = name; renderSheet(); }
 function closeSheet() {
+  if (sheet === 'avatar') av = null; // the selfie leaves memory with the sheet
   const bg = document.getElementById('sheet'); sheet = '';
   if (!bg || bg.classList.contains('out')) return;
   const sh = bg.querySelector('.sheet'); sh.style.animation = ''; sh.style.transition = '';
@@ -1142,6 +1161,7 @@ function renderSheet(quiet = false) {
     <p class="sec-h">Wasza para</p><div class="sec">
       ${row(ic('heart'), 'Para', `${h(myName())} ♡ ${state?.connected ? h(otherName()) : 'czeka na drugą osobę'}`, '')}
       ${row(ic('heart', 'lav'), 'Twoje imię', 'Widzicie je oboje w nagłówku.', `<button class="btn-soft" data-action="name">${h(myName())}</button>`)}
+      ${row(`<span class="set-ic av-ic"><img src="${h(AV(state?.you || 1))}" alt=""></span>`, 'Twoja postać', myAvatar() ? 'Narysowana z Twojego selfie.' : 'Zrób selfie, a Puszystek Cię narysuje.', `<button class="btn-soft" data-action="avatar">${myAvatar() ? 'Zmień' : 'Stwórz'}</button>`)}
       ${row(ic('cal', 'lav'), 'Data pierwszego spotkania', 'Pamiątka (opcjonalna). Nie wpływa na nagrody.', `<button class="btn-soft" data-action="first-date">${h(state?.firstMetAt || 'Ustaw')}</button>`)}
       ${state && !state.connected ? `<div class="set">${ic('key', 'gold')}<div><b>Kod zaproszenia</b><small>Druga osoba wybiera „Dołącz z kodem”.</small><div class="code">${h(state.code || '')}</div></div><button class="btn-soft" data-action="copy">Kopiuj</button></div>` : ''}
     </div>
@@ -1163,7 +1183,7 @@ function renderSheet(quiet = false) {
     <p class="sec-h">Konto</p><div class="sec">
       ${row(ic('key', 'lav'), 'Logowanie na innym telefonie', 'Jednorazowo pokażemy Twój kod logowania.', '<button class="btn-soft" data-action="login-code">Pokaż kod</button>')}
     </div>
-    <p class="set-note">Imiona, licznik, nagrody, ekwipunek i domek są na wspólnym serwerze. Pozycja jest tymczasowa — nie tworzymy historii lokalizacji.</p>
+    <p class="set-note">Imiona, licznik, nagrody, ekwipunek i domek są na wspólnym serwerze. Pozycja jest tymczasowa — nie tworzymy historii lokalizacji. Selfie do postaci trafia do Cloudflare Workers AI tylko na czas rysowania i nie jest nigdzie zapisywane — przechowujemy wyłącznie wybrany rysunek, który usuwasz jednym przyciskiem albo razem z rozłączeniem pary.</p>
     <button class="btn-soft wide btn-danger" data-action="logout">Odłącz ten telefon</button>`;
   }
   else if (sheet === 'history') c = `<h2>Wasze spotkania</h2><p>Ta sama historia na obu telefonach. Pomyłki można usunąć.</p>
@@ -1185,6 +1205,7 @@ function renderSheet(quiet = false) {
     <div class="row-btns"><button class="btn-soft" data-action="close">Nie teraz</button><button class="btn-main" data-action="confirm-meeting">${m.pr.myConfirm ? 'Potwierdzone' : 'Jesteśmy razem'} ${I.heart('', '#fff')}</button></div>`;
   else if (sheet === 'check') c = checkSheet(m);
   else if (sheet === 'energy') c = energySheet(m);
+  else if (sheet === 'avatar') c = avatarSheet();
   else if (sheet === 'quiz-invite') c = `<div class="q-invite"><img class="px-art" src="/img/ui/ic-quiz.png" alt=""><h2>${h(otherName())} zaprasza do quizu</h2><p>„${QUIZ_MODES[m.quiz?.mode]?.name || 'Quiz'}”. ${h(QUIZ_MODES[m.quiz?.mode]?.desc || '')}</p></div>
     <div class="row-btns"><button class="btn-soft" data-action="close">Później</button><button class="btn-main" data-action="quiz-join">Dołączam ${I.heart('', '#fff')}</button></div>`;
   else if (sheet === 'ghost') c = `<h2>Tryb ducha</h2><p>Robisz sobie przerwę: ${h(otherName())} nie zobaczy Cię na mapie, a Twoja ostatnia pozycja od razu znika z serwera. Wykrywanie spotkań też czeka, aż wrócisz.</p>
@@ -1215,7 +1236,7 @@ function renderSheet(quiet = false) {
   document.getElementById('sheet')?.remove();
   const bg = document.createElement('div');
   bg.className = 'sheet-bg' + (quiet ? ' static' : ''); bg.id = 'sheet';
-  const label = sheet.startsWith('item:') ? BY_ID[sheet.slice(5)]?.name : { settings: 'Ustawienia', history: 'Historia spotkań' }[sheet] || 'Panel';
+  const label = sheet.startsWith('item:') ? BY_ID[sheet.slice(5)]?.name : { settings: 'Ustawienia', history: 'Historia spotkań', avatar: 'Twoja postać' }[sheet] || 'Panel';
   bg.innerHTML = `<div class="sheet${quiet ? ' static' : ''}${sheet.startsWith('item:') ? ' item-sheet' : ''}" role="dialog" aria-modal="true" aria-label="${h(label)}">
     <div class="sheet-grab" aria-hidden="true"><span></span></div>
     <button class="sheet-x" data-action="close" aria-label="Zamknij">${I.close}</button>
@@ -1225,8 +1246,85 @@ function renderSheet(quiet = false) {
   if (quiet) bg.querySelector('.sheet-body').scrollTop = prevScroll;
   attachSheetDrag(bg);
   justChanged = null;
-  if (sheet.startsWith('item:')) { const p = bg.querySelector('.pusz'); if (p) pusz.mount(p); }
+  if (sheet.startsWith('item:') || sheet === 'avatar') { const p = bg.querySelector('.pusz'); if (p) pusz.mount(p); }
+  bg.querySelectorAll('input[data-avatar-file]').forEach(i => i.addEventListener('change', onAvatarFile));
 }
+
+// ------------------------------------------------------------------ own avatar
+// Selfie -> the person's own chibi (src/avatar.js on the Worker). The photo is
+// prepared on this phone (public/avatar.js), sent once per drawing and kept only
+// in memory while this sheet is open; the server stores just the chosen picture.
+let av = null; // {step, onboarding, photo, faces, features, drafts:[{id,src}], sel, quota, msg, code}
+const myAvatar = () => state?.members?.find(x => x.slot === state.you)?.avatar || null;
+const avPics = n => `${n} ${plural(n, 'rysunek', 'rysunki', 'rysunków')}`;
+function startAvatar(onboarding = false) {
+  av = { step: 'intro', onboarding, drafts: [], quota: null };
+  openSheet('avatar');
+  request('/api/avatar/quota').then(q => { if (av) { av.quota = q; if (sheet === 'avatar' && av.step === 'intro') renderSheet(true); } }).catch(() => { });
+}
+const fileBtn = (cls, label, capture) => `<label class="${cls} file-btn">${label}<input type="file" accept="image/*"${capture ? ' capture="user"' : ''} data-avatar-file></label>`;
+const avHearts = () => `<div class="av-hearts" aria-hidden="true">${[0, 1, 2, 3, 4].map(i => `<img class="px-art" src="/img/ui/heart-pink.png" alt="" style="--i:${i}">`).join('')}</div>`;
+const avPusz = label => `<div class="av-pusz">${puszystekHTML({ pose: 'home', box: [0, 0, 200], outfit: model()?.outfit || [], label, stagePx: () => 'left:0;top:0;width:100%' })}</div>`;
+function avatarSheet() {
+  const a = av || (av = { step: 'intro', drafts: [] });
+  const left = a.quota?.left;
+  const leftNote = left == null ? '' : left > 0 ? `<p class="note">Dziś możesz narysować jeszcze ${avPics(left)}.</p>` : '<p class="note">Na dziś to już wszystkie rysunki — jutro Puszystek narysuje kolejne.</p>';
+  const limit = a.code === 'pool' || a.code === 'me';
+  if (a.step === 'check') return `<h2>Sprawdzam zdjęcie…</h2><div class="av-wait">${avHearts()}</div>`;
+  if (a.step === 'warn') return `<h2>${a.faces === 0 ? 'Nie widzę twarzy' : 'Widzę kilka twarzy'}</h2>
+    <div class="av-photo"><img src="${a.photo}" alt="Wybrane zdjęcie"></div>
+    <p>${a.faces === 0 ? 'Najlepiej działa selfie z bliska, na wprost, w dobrym świetle.' : 'Postać będzie najbardziej podobna, gdy na zdjęciu jesteś tylko Ty.'}</p>
+    ${fileBtn('btn-main wide', 'Wybierz inne zdjęcie')}
+    <button class="btn-ghost wide" data-action="avatar-anyway">Spróbuj mimo to</button>`;
+  if (a.step === 'loading') return `<div class="av-loading">${avPusz('Puszystek rysuje')}${avHearts()}
+    <h2>Puszystek rysuje Twoją postać…</h2><p>To zwykle trwa kilka sekund.</p></div>`;
+  if (a.step === 'pick') {
+    const sel = a.drafts.find(d => d.id === a.sel) || a.drafts.at(-1);
+    return `<h2>Twoja postać</h2><p>${a.drafts.length > 1 ? 'Wybierz rysunek, który najbardziej Ci się podoba.' : 'Tak widzi Cię Puszystek. Podoba Ci się?'}</p>
+    <div class="av-big"><img src="${sel.src}" alt="Narysowana postać"></div>
+    ${a.drafts.length > 1 ? `<div class="av-drafts">${a.drafts.map((d, i) => `<button class="av-draft${d.id === sel.id ? ' on' : ''}" data-action="avatar-sel" data-id="${d.id}" aria-label="Rysunek ${i + 1}" aria-pressed="${d.id === sel.id}"><img src="${d.src}" alt=""></button>`).join('')}</div>` : ''}
+    <button class="btn-main wide" data-action="avatar-use">Wybieram tę ${I.heart('', '#fff')}</button>
+    <div class="row-btns"><button class="btn-soft" data-action="avatar-more"${left === 0 ? ' disabled aria-disabled="true"' : ''}>Pokaż jeszcze jeden</button>${fileBtn('btn-soft', 'Inne zdjęcie')}</div>
+    ${leftNote}`;
+  }
+  if (a.step === 'error') return `<div class="av-loading${limit ? ' tired' : ''}">${avPusz('Puszystek')}
+    <h2>${limit ? 'Na dziś koniec rysowania' : 'Ups'}</h2><p>${h(a.msg || 'Coś poszło nie tak.')}</p></div>
+    ${limit ? '' : a.photo && !['noface', 'many', 'photo'].includes(a.code) ? '<button class="btn-main wide" data-action="avatar-retry">Spróbuj jeszcze raz</button>' : fileBtn('btn-main wide', 'Wybierz inne zdjęcie')}
+    <button class="btn-ghost wide" data-action="avatar-skip">${myAvatar() ? 'Zostaw obecną postać' : 'Zostaję przy domyślnej'}</button>`;
+  // intro: what happens to the photo, shown before any photo is taken
+  return `<div class="av-now"><img src="${h(AV(state?.you || 1))}" alt=""></div>
+    <h2>Stwórz swoją postać</h2>
+    <p>Zrób selfie, a Puszystek narysuje Cię w stylu Razem. ${state?.connected ? h(otherName()) : 'Druga osoba'} zobaczy Twoją postać w nagłówku, na mapie i w quizach.</p>
+    <div class="av-consent">${I.lock}<p>Zdjęcie trafia do <b>Cloudflare Workers AI</b> tylko po to, by narysować postać, i <b>nie jest przez nas zapisywane</b>. Zachowujemy tylko rysunek, który wybierzesz — możesz go w każdej chwili usunąć.</p></div>
+    ${fileBtn('btn-main wide', `Zrób selfie ${I.heart('', '#fff')}`, true)}
+    ${fileBtn('btn-soft wide', 'Wybierz zdjęcie')}
+    ${a.onboarding ? '<button class="btn-ghost wide" data-action="avatar-skip">Pomiń — zostanę przy domyślnej</button>' : myAvatar() ? '<button class="btn-ghost wide btn-danger" data-action="avatar-delete">Usuń mój awatar</button>' : ''}
+    ${leftNote}`;
+}
+async function avatarPhoto(file) {
+  if (!av || !file) return;
+  av.step = 'check'; renderSheet(true);
+  try { Object.assign(av, await readPhoto(file), { features: '' }); }
+  catch (e) { Object.assign(av, { step: 'error', msg: e.message, code: 'photo', photo: null }); return renderSheet(true); }
+  if (av.faces === 0 || av.faces > 1) { av.step = 'warn'; return renderSheet(true); }
+  avatarDraw();
+}
+async function avatarDraw() {
+  if (!av?.photo) return;
+  const mine = av; mine.step = 'loading'; mine.code = ''; renderSheet(true);
+  try {
+    const r = await request('/api/avatar/generate', { photo: mine.photo, ...(mine.features ? { features: mine.features } : {}) });
+    Object.assign(mine, { features: r.features, quota: r.quota, sel: r.draft.id, step: 'pick' }); mine.drafts.push(r.draft);
+  } catch (e) {
+    Object.assign(mine, { msg: e.message, code: e.data?.code || (e.status ? 'error' : 'offline') });
+    if (mine.code === 'me' && mine.quota) mine.quota.left = 0;
+    if (mine.drafts.length && !['noface', 'many'].includes(mine.code)) { mine.step = 'pick'; if (av === mine && sheet === 'avatar') toast(h(e.message)); }
+    else mine.step = 'error';
+  }
+  if (av === mine && sheet === 'avatar') renderSheet(true);
+}
+// bound on each input (renderSheet): the photo picker may still be open when the sheet is drawn again
+function onAvatarFile(e) { const f = e.currentTarget; const file = f.files?.[0]; f.value = ''; if (file) avatarPhoto(file); }
 
 // ------------------------------------------------------------------ actions
 function go(r) { const hsh = HASH[r]; if ((location.hash || '') === hsh) return render(r, true); if (hsh) location.hash = hsh; else history.pushState(null, '', location.pathname + location.search); if (!hsh) render('home', true); }
@@ -1280,6 +1378,15 @@ async function act(action, el) {
     else if (action === 'check-now') await checkNow();
     else if (action === 'map-share') { if (DEMO) return toast('To tylko podgląd'); openSheet('map-share'); }
     else if (action === 'map-share-toggle') { mapView = await request('/api/map-share', { on: !mapView?.me?.sharing }); closeSheet(); toast(mapView.me.sharing ? `${h(otherName())} widzi Cię na mapie ♡` : 'Nie pokazujesz się już na mapie'); refreshMap(); if (mapView.me.sharing && !geoOn) await enableGeo().catch(e => toast(h(e.message))); }
+    else if (action === 'avatar') { if (DEMO) return toast('To tylko podgląd'); if (!state) return; startAvatar(false); }
+    else if (action === 'avatar-skip') closeSheet();
+    else if (action === 'avatar-anyway' || action === 'avatar-retry' || action === 'avatar-more') avatarDraw();
+    else if (action === 'avatar-sel') { if (av) { av.sel = el.dataset.id; renderSheet(true); } }
+    else if (action === 'avatar-use') {
+      if (!av?.sel) return;
+      state = await request('/api/avatar/choose', { draft: av.sel }); saveState(); closeSheet(); render(route); toast('Twoja postać jest gotowa ♥');
+    }
+    else if (action === 'avatar-delete') { state = await request('/api/avatar/delete', {}); saveState(); closeSheet(); render(route); toast('Wróciła domyślna postać'); }
     else if (action === 'ghost' || action === 'unpair') { if (DEMO) return toast('To tylko podgląd'); if (!state) return; openSheet(action); }
     else if (action === 'ghost-set' || action === 'ghost-off') {
       const res = await request('/api/ghost', action === 'ghost-off' ? { off: true } : el.dataset.forever ? { forever: true } : { minutes: Number(el.dataset.min) });
@@ -1439,6 +1546,7 @@ document.addEventListener('submit', async e => {
       const res = mode === 'create' ? await request('/api/create', { name }) : mode === 'join' ? await request('/api/join', { name, code: form.querySelector('#code').value }) : await request('/api/restore', { code: form.querySelector('#code').value });
       token = res.token; localStorage.setItem(cacheKey, token); state = null;
       await refresh(); toast(mode === 'create' ? 'Wasz świat jest gotowy ♥' : mode === 'join' ? 'Jesteście połączeni! ♥' : 'Witaj z powrotem! ♥');
+      if (mode !== 'restore' && state) startAvatar(true);
     } else if (form.id === 'name-form') {
       state = await request('/api/name', { name: form.querySelector('#myname').value.trim() }); saveState(); closeSheet(); render(route); toast('Imię zapisane ♥');
     } else if (form.id === 'date-form') {
@@ -1483,7 +1591,7 @@ async function refresh() {
     const partnerChange = oldVersion !== undefined && next.rewards.version > oldVersion && ch && ch.by !== next.you && BY_ID[ch.id];
     if (partnerChange && (ch.op === 'equip' || (ch.op === 'claim' && ch.worn))) freshItem = ch.id;
     // the view under an open celebration is refreshed too, so nothing is stale when it closes
-    if (!sheet || old === undefined || sheet.startsWith('item:') || partnerChange) { render(route === 'onboarding' || !route ? routeFromHash() : route); if (sheet && old !== undefined) renderSheet(true); }
+    if (!sheet || old === undefined || sheet.startsWith('item:') || partnerChange) { render(route === 'onboarding' || !route ? routeFromHash() : route); if (sheet && sheet !== 'avatar' && old !== undefined) renderSheet(true); }
     if (partnerChange) { toast(`${h(otherName())} ${verb(ch.op) || 'zmienił(a) ekwipunek'}: ${h(BY_ID[ch.id].name)} ♥`); if (ch.op !== 'unequip') pusz.celebrate('reward'); }
     if (old === undefined) newRewards();
     else if (next.count !== old) afterCountChange(old);

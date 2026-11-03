@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS members (
  ping_at INTEGER,
  map_on INTEGER NOT NULL DEFAULT 0,
  ghost_until INTEGER,
+ avatar_key TEXT,
  UNIQUE(pair_id, slot)
 );
 CREATE TABLE IF NOT EXISTS meetings (
@@ -63,3 +64,10 @@ CREATE TABLE IF NOT EXISTS quiz_sessions (id TEXT PRIMARY KEY, pair_id TEXT NOT 
 CREATE INDEX IF NOT EXISTS ix_quiz_pair ON quiz_sessions(pair_id, created_at);
 CREATE TABLE IF NOT EXISTS quiz_answers (session_id TEXT NOT NULL REFERENCES quiz_sessions(id), idx INTEGER NOT NULL, slot INTEGER NOT NULL, answer TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY (session_id, idx, slot));
 CREATE TABLE IF NOT EXISTS energy_events (pair_id TEXT NOT NULL REFERENCES pairs(id), key TEXT NOT NULL, delta INTEGER NOT NULL, kind TEXT NOT NULL, day TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY (pair_id, key));
+-- personal avatars (migrations/0009): only the chosen picture and short-lived drafts; the selfie is never stored
+CREATE TABLE IF NOT EXISTS avatars (key TEXT PRIMARY KEY, member_id TEXT NOT NULL, img TEXT NOT NULL, mime TEXT NOT NULL, created_at INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS ix_avatars_member ON avatars(member_id);
+CREATE TABLE IF NOT EXISTS avatar_drafts (id TEXT PRIMARY KEY, member_id TEXT NOT NULL, img TEXT NOT NULL, mime TEXT NOT NULL, created_at INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS ix_avatar_drafts_member ON avatar_drafts(member_id);
+CREATE TABLE IF NOT EXISTS avatar_usage (day TEXT NOT NULL, member_id TEXT NOT NULL, images INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (day, member_id));
+CREATE TABLE IF NOT EXISTS avatar_pool (day TEXT PRIMARY KEY, neurons REAL NOT NULL DEFAULT 0, images INTEGER NOT NULL DEFAULT 0);
