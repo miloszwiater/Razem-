@@ -405,6 +405,8 @@ img { display: block; user-select: none; -webkit-user-drag: none; }
 .btn-soft { height: 40dp; padding: 0 18dp; border-radius: 99dp; background: #fff; box-shadow: inset 0 0 0 1.2dp #f1dfe7; color: #4b3d68; font-size: 14dp; font-weight: 600; }
 .btn-soft.wide { width: 100%; }
 .btn-danger { color: #c0386f; }
+.btn-main.btn-unpair { background: linear-gradient(180deg, #ef6f8f, #d94a74); box-shadow: 0 4dp 12dp rgba(217, 74, 116, .3); }
+.sheet .btn-ghost.wide + .row-btns { margin-top: 10dp; }
 .note { margin: 10dp 0 0; text-align: center; font-size: 11.8dp; color: #8a7f9f; }
 
 /* ---------------------------------------------------------------- sheets */

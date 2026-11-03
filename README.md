@@ -45,6 +45,12 @@ Produkcyjna baza D1 `razem-dwoje-data` już istnieje i ma dane — **nie urucham
 - Partnera widać tylko po jego zgodzie („Pokazuj mnie na mapie”, `members.map_on`), osobnej od wykrywania spotkań. Pozycja starsza niż 2 min jest oznaczona jako nieaktualna, po 15 min znika.
 - Ograniczenia iOS: brak lokalizacji w tle w PWA, Safari może wstrzymać stronę po zablokowaniu ekranu, a dokładność zależy od GPS/Wi-Fi. Przyszła wersja natywna (np. Capacitor + Core Location z „Significant-Change Location Service” i regionami geofence) mogłaby wykrywać spotkania w tle — wymaga konta Apple Developer i zgody „Zawsze” na lokalizację. Nie jest częścią tej wersji.
 
+## Prywatność: tryb ducha i rozłączanie
+
+- **Tryb ducha** (Ustawienia → Prywatność, albo z mapy): przerwa na 1 h, 8 h lub do odwołania (`/api/ghost`, kolumna `members.ghost_until`). Od razu kasuje ostatnią pozycję z serwera, a nowe pomiary są odrzucane, więc partner nie widzi Cię na mapie i wykrywanie spotkań czeka. Partner widzi tylko „ma przerwę od mapy”.
+- **Rozłącz parę** (Ustawienia → Prywatność): jedno potwierdzenie i `/api/unpair` w jednej transakcji usuwa wszystkie wiersze pary: spotkania, nagrody, domek, quizy, energię, pozycje, push i kody logowania. Oba telefony tracą sesję; drugi przy następnej synchronizacji wraca do ekranu startowego z komunikatem „Połączenie zostało zakończone”. Nie da się tego cofnąć.
+- Migracja `migrations/0008_ghost.sql` jest przyrostowa; Worker sam dodaje kolumnę (`ensureSchema`), więc deploy nie wymaga ręcznej migracji.
+
 ## Domek, nagrody, quizy, energia
 
 - Domek: pięć pokoi (salon, sypialnia, kuchnia, łazienka, taras), otwieranych wraz z liczbą spotkań. Geometria, strefy, kolizje i „stawianie na meblach” są w `public/room.js` — te same reguły sprawdza edytor i Worker (`/api/room-move`, 409 przy konflikcie). Grafiki: `tools/house.py`, `house2.py`, `house3.py`.

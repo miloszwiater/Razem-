@@ -41,6 +41,15 @@ const ALL_PROG = { meetings: 1e9, quizzes: 1e9, care: 1e9, streak: 1e9 };
 const dp = v => `calc(${(+v).toFixed(2)} * var(--u))`;
 const at = (x, y, w) => `left:${dp(x / S)};top:${dp(y / S)};width:${dp(w / S)}`;
 const dateText = ms => new Date(ms).toLocaleDateString('pl-PL', { day: 'numeric', month: 'long', year: 'numeric' });
+// ghost mode (a pause in sharing my position): active until state.ghostUntil
+const GHOST_FOREVER = 4102444800000;
+const ghostActive = () => !DEMO && Number(state?.ghostUntil || 0) > Date.now();
+function ghostText(until = state?.ghostUntil) {
+  if (!until || until <= Date.now()) return 'Wyłączony';
+  if (until >= GHOST_FOREVER) return 'Włączony, do odwołania';
+  const d = new Date(until), t = d.toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' });
+  return d.toDateString() === new Date().toDateString() ? `Włączony do ${t}` : `Włączony do jutra, ${t}`;
+}
 // whole calendar days between that date and today (local time), independent of the hour
 const daysSince = date => { const [y, mo, d] = date.split('-').map(Number), t = new Date(); return Math.max(0, Math.round((Date.UTC(t.getFullYear(), t.getMonth(), t.getDate()) - Date.UTC(y, mo - 1, d)) / 86400000)); };
 const fmtDist = m => m >= 1000 ? `${(m / 1000).toFixed(1).replace('.', ',')} km` : `${m} m`;
@@ -415,7 +424,9 @@ const AV = slot => slot === 1 ? '/img/chip-boy.png' : '/img/chip-girl.png';
 function mapChip(m) {
   const p = m?.pr || {};
   if (DEMO) return 'Dokładność: ±12 m';
+  if (ghostActive()) return `Tryb ducha · ${ghostText().replace('Włączony, ', '').replace('Włączony ', '')}`;
   if (!mapView?.me?.sharing) return 'Pokazuj mnie na mapie: wył.';
+  if (mapView?.partner?.ghost) return `${partnerName()} ma przerwę od mapy`;
   if (mapView?.partner && !mapView.partner.sharing) return `${partnerName()} nie pokazuje się na mapie`;
   return p.distance != null ? `ok. ${fmtDist(p.distance)} od siebie · ±${p.me?.acc ?? '–'} m` : 'Dokładność: czekamy na pomiar';
 }
@@ -445,6 +456,7 @@ function mountMap(v) {
 function detectCopy(m) {
   const p = m.pr || {};
   if (DEMO || p.stage === 'recorded') return { title: 'Spotkanie wykryte!', sub: `Jesteście razem ${I.sparkHeart}`, together: true };
+  if (ghostActive()) return { title: 'Tryb ducha', sub: 'Masz przerwę w udostępnianiu pozycji', apart: true };
   if (p.stage === 'together') return { title: 'Jesteście razem!', sub: `ok. ${fmtDist(p.distance)} od siebie ${I.sparkHeart}`, together: true, cta: true };
   if (p.stage === 'near') return { title: 'Jesteście niedaleko!', sub: `ok. ${fmtDist(p.distance)} od siebie ${I.sparkHeart}`, apart: true, check: true };
   if (p.stage === 'far') return { title: 'Szukamy siebie…', sub: `Jeszcze ${fmtDist(p.distance)} od siebie`, apart: true, check: true };
@@ -1144,6 +1156,10 @@ function renderSheet(quiet = false) {
       ${row(ic('heart', 'mint'), 'Energia Puszystka', m?.energy ? `${Math.round(m.energy.value)}/100 · ${m.energy.rest ? 'odpoczywa' : MOOD[m.energy.mood]}` : 'Rośnie po spotkaniach i quizach.', '<button class="btn-soft" data-action="energy">Pokaż</button>')}
       ${row(ic('house', 'gold'), `Domek Puszystka${m?.houseReady.length ? `<span class="dot">${m.houseReady.length}</span>` : ''}`, 'Meble i dekoracje do wspólnego pokoju.', '<button class="btn-soft" data-action="house">Wejdź</button>')}
     </div>
+    <p class="sec-h">Prywatność</p><div class="sec">
+      ${row(ic('pin', 'lav'), 'Tryb ducha', ghostActive() ? h(ghostText()) : 'Przerwa: nikt nie widzi, gdzie jesteś.', `<button class="btn-soft" data-action="ghost">${ghostActive() ? 'Zmień' : 'Włącz'}</button>`)}
+      ${row(ic('heart'), state?.connected ? 'Rozłącz parę' : 'Usuń konto', 'Usuwa wszystkie wasze dane. Bez cofania.', `<button class="btn-soft btn-danger" data-action="unpair">${state?.connected ? 'Rozłącz' : 'Usuń'}</button>`)}
+    </div>
     <p class="sec-h">Konto</p><div class="sec">
       ${row(ic('key', 'lav'), 'Logowanie na innym telefonie', 'Jednorazowo pokażemy Twój kod logowania.', '<button class="btn-soft" data-action="login-code">Pokaż kod</button>')}
     </div>
@@ -1171,8 +1187,19 @@ function renderSheet(quiet = false) {
   else if (sheet === 'energy') c = energySheet(m);
   else if (sheet === 'quiz-invite') c = `<div class="q-invite"><img class="px-art" src="/img/ui/ic-quiz.png" alt=""><h2>${h(otherName())} zaprasza do quizu</h2><p>„${QUIZ_MODES[m.quiz?.mode]?.name || 'Quiz'}”. ${h(QUIZ_MODES[m.quiz?.mode]?.desc || '')}</p></div>
     <div class="row-btns"><button class="btn-soft" data-action="close">Później</button><button class="btn-main" data-action="quiz-join">Dołączam ${I.heart('', '#fff')}</button></div>`;
+  else if (sheet === 'ghost') c = `<h2>Tryb ducha</h2><p>Robisz sobie przerwę: ${h(otherName())} nie zobaczy Cię na mapie, a Twoja ostatnia pozycja od razu znika z serwera. Wykrywanie spotkań też czeka, aż wrócisz.</p>
+    <p>${h(otherName())} zobaczy tylko, że masz przerwę, nie dowie się, gdzie jesteś.${ghostActive() ? ` <b>Teraz: ${h(ghostText())}.</b>` : ''}</p>
+    <div class="radius-opts three"><button data-action="ghost-set" data-min="60">1 godzina</button><button data-action="ghost-set" data-min="480">8 godzin</button><button data-action="ghost-set" data-forever="1" aria-pressed="${Number(state?.ghostUntil) >= GHOST_FOREVER}">Do odwołania</button></div>
+    ${ghostActive() ? '<button class="btn-main wide" data-action="ghost-off">Wyłącz tryb ducha</button>' : ''}`;
+  else if (sheet === 'unpair') c = state?.connected
+    ? `<h2>Na pewno rozłączyć?</h2><p>Para ${h(myName())} ♡ ${h(otherName())} zostanie rozłączona, a z serwera znikną <b>na zawsze, dla was obojga</b>: ${state.count} ${plural(state.count, 'spotkanie', 'spotkania', 'spotkań')}, nagrody, ekwipunek i domek Puszystka, quizy, energia i ostatnie pozycje.</p>
+    <p>${h(otherName())} nie dostanie powiadomienia. Przy następnym otwarciu Razem zobaczy, że połączenie zostało zakończone. <b>Tego nie da się cofnąć.</b></p>
+    <div class="row-btns"><button class="btn-soft" data-action="close">Anuluj</button><button class="btn-main btn-unpair" data-action="unpair-confirm">Rozłącz i usuń</button></div>`
+    : `<h2>Usunąć konto?</h2><p>Z serwera znikną na zawsze Twoje imię, kod zaproszenia, spotkania, nagrody, domek Puszystka i ostatnia pozycja. <b>Tego nie da się cofnąć.</b></p>
+    <div class="row-btns"><button class="btn-soft" data-action="close">Anuluj</button><button class="btn-main btn-unpair" data-action="unpair-confirm">Tak, usuń wszystko</button></div>`;
   else if (sheet === 'map-share') c = `<h2>Pokazywanie na mapie</h2><p>Mapa zawsze pokazuje Tobie Twoją pozycję. ${h(otherName())} zobaczy Cię na mapie tylko wtedy, gdy to włączysz. To osobna zgoda od wykrywania spotkań.</p>
     <p>Pozycja jest widoczna tylko wtedy, gdy Razem jest otwarte, a starsza niż 2 minuty jest oznaczona jako nieaktualna. Po 15 minutach znika z serwera.</p>
+    <button class="btn-ghost wide" data-action="ghost">Tryb ducha: ${h(ghostText())}</button>
     <div class="row-btns"><button class="btn-soft" data-action="close">Zamknij</button><button class="btn-main" data-action="map-share-toggle">${mapView?.me?.sharing ? 'Przestań mnie pokazywać' : `Pokazuj mnie ${h(otherName())}`}</button></div>`;
   else if (sheet === 'diag') c = diagSheet(m);
   else if (sheet === 'name') c = `<h2>Twoje imię</h2><p>Zobaczycie je oboje w nagłówku aplikacji.</p>
@@ -1253,6 +1280,19 @@ async function act(action, el) {
     else if (action === 'check-now') await checkNow();
     else if (action === 'map-share') { if (DEMO) return toast('To tylko podgląd'); openSheet('map-share'); }
     else if (action === 'map-share-toggle') { mapView = await request('/api/map-share', { on: !mapView?.me?.sharing }); closeSheet(); toast(mapView.me.sharing ? `${h(otherName())} widzi Cię na mapie ♡` : 'Nie pokazujesz się już na mapie'); refreshMap(); if (mapView.me.sharing && !geoOn) await enableGeo().catch(e => toast(h(e.message))); }
+    else if (action === 'ghost' || action === 'unpair') { if (DEMO) return toast('To tylko podgląd'); if (!state) return; openSheet(action); }
+    else if (action === 'ghost-set' || action === 'ghost-off') {
+      const res = await request('/api/ghost', action === 'ghost-off' ? { off: true } : el.dataset.forever ? { forever: true } : { minutes: Number(el.dataset.min) });
+      const { map, ...next } = res; state = next; mapView = map; saveState(); closeSheet(); render(route); refreshMap();
+      toast(ghostActive() ? `Tryb ducha: ${h(ghostText().toLowerCase())} ♡` : 'Tryb ducha wyłączony ♡');
+      if (!ghostActive()) freshSend();
+    }
+    else if (action === 'unpair-confirm') {
+      el.disabled = true;
+      await request('/api/unpair', { confirm: 'ROZŁĄCZ' });
+      geoOn = false; setPref('geo', false); stopWatch(); lastFix = null; mapView = null;
+      signOut(); closeSheet(); render('onboarding'); toast('Rozłączono. Wszystkie dane zostały usunięte.');
+    }
     else if (action === 'map-fit') pairMap.fit('both');
     else if (action === 'map-full') {
       // the full-screen map is its own layer over the app (the card sits in a transformed stage)
@@ -1451,7 +1491,7 @@ async function refresh() {
     promptMeeting();
     promptQuiz();
   } catch (err) {
-    if (err.status === 401) { signOut(); stopWatch(); render('onboarding'); }
+    if (err.status === 401) { const wasPaired = state?.connected; signOut(); stopWatch(); render('onboarding'); if (wasPaired) toast('Połączenie zostało zakończone. Możecie założyć nową parę.'); }
     else console.warn('Synchronizacja:', err.message);
   } finally { syncing = false; }
 }
@@ -1489,7 +1529,7 @@ function startWatch() {
 function stopWatch() { if (watchId !== null) navigator.geolocation.clearWatch(watchId); watchId = null; clearInterval(keepAlive); keepAlive = null; }
 // report the last reading (throttled): every new reading after 10 s, or when forced
 async function send(path = '/api/location', force = false) {
-  if (!lastFix || !token || DEMO || !state) return;
+  if (!lastFix || !token || DEMO || !state || ghostActive()) return;
   const now = Date.now();
   if (now - lastFix.timestamp > 110000) return; // too old to prove anything
   if (!force && (lastFix.timestamp === sentFixTs || now - lastSent < 10000)) return;

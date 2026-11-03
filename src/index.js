@@ -30,7 +30,7 @@ async function ensureSchema(env){
   for(const [c,def] of list){if(cols.has(c))continue;try{await env.DB.prepare(`ALTER TABLE ${table} ADD COLUMN ${c} ${def}`).run()}catch(e){if(!/duplicate column/i.test(String(e?.message)))throw e}}
  };
  await addColumns('pair_prefs',[['claimed',"TEXT NOT NULL DEFAULT '[]'"],['version','INTEGER NOT NULL DEFAULT 0'],['last_change','TEXT'],['room',"TEXT NOT NULL DEFAULT '{}'"],['achieved',"TEXT NOT NULL DEFAULT '{}'"]]);
- await addColumns('members',[['geo_on','INTEGER NOT NULL DEFAULT 0'],['ping_at','INTEGER'],['map_on','INTEGER NOT NULL DEFAULT 0']]);
+ await addColumns('members',[['geo_on','INTEGER NOT NULL DEFAULT 0'],['ping_at','INTEGER'],['map_on','INTEGER NOT NULL DEFAULT 0'],['ghost_until','INTEGER']]);
  await addColumns('pairs',[['confirm1_at','INTEGER'],['confirm2_at','INTEGER'],['notified_near_at','INTEGER'],['tz','TEXT']]);
  await addColumns('pair_prefs',[['energy_rest','INTEGER NOT NULL DEFAULT 0'],['energy_since','TEXT'],['streak_best','INTEGER NOT NULL DEFAULT 0']]);
  await addColumns('meetings',[['session_key','TEXT']]);
@@ -212,14 +212,17 @@ async function recordMeeting(env,ctx,pairId,{when=Date.now(),source,by=null,sess
  return created;
 }
 
-const MEMBER_SQL='SELECT m.id,m.pair_id,m.display_name,m.slot,p.invite_code,p.first_met_at,p.created_at,p.tz FROM members m JOIN pairs p ON p.id=m.pair_id';
+const MEMBER_SQL='SELECT m.id,m.pair_id,m.display_name,m.slot,m.ghost_until,p.invite_code,p.first_met_at,p.created_at,p.tz FROM members m JOIN pairs p ON p.id=m.pair_id';
 // a session is the token from create/join, or one issued later by a login code
 async function member(req,env){const token=(req.headers.get('Authorization')||'').replace(/^Bearer\s+/i,'');if(!/^[a-f0-9]{64}$/.test(token))return null;const hash=await sha(token);
  return await env.DB.prepare(MEMBER_SQL+' WHERE m.token_hash=?').bind(hash).first()||await env.DB.prepare(MEMBER_SQL+' JOIN member_tokens t ON t.member_id=m.id WHERE t.token_hash=?').bind(hash).first()}
 
 // ------------------------------------------------------------------ proximity + push helpers
 const PAIR_COLS='first_met_at,created_at,invite_code,active_since,active_recorded,apart_since,confirm1_at,confirm2_at,notified_near_at';
-const MEMBER_COLS='id,display_name,slot,geo_on,ping_at,location_at,latitude,longitude,accuracy,map_on';
+const MEMBER_COLS='id,display_name,slot,geo_on,ping_at,location_at,latitude,longitude,accuracy,map_on,ghost_until';
+// ghost mode: a pause in sharing my position (map and meeting detection) until a time
+const GHOST_FOREVER=4102444800000; // 2100-01-01: "until I switch it off"
+const ghostOn=(r,now=Date.now())=>!!r&&Number(r.ghost_until||0)>now;
 const pairRow=(env,pairId)=>env.DB.prepare(`SELECT ${PAIR_COLS} FROM pairs WHERE id=?`).bind(pairId).first();
 async function memberRows(env,pairId,now=Date.now()){
  // coordinates are erased 15 minutes after the reading: no location history is kept
@@ -274,7 +277,8 @@ async function mapView(env,m){
  const rows=await memberRows(env,m.pair_id),now=Date.now();
  const me=rows.find(r=>r.slot===m.slot),pt=rows.find(r=>r.slot!==m.slot);
  const pos=r=>r&&r.latitude!=null?{lat:r.latitude,lon:r.longitude,acc:Math.round(r.accuracy),age:now-r.location_at,stale:now-r.location_at>RULES.FRESH}:null;
- return {me:{name:me.display_name,sharing:!!me.map_on,pos:pos(me)},partner:pt?{name:pt.display_name,sharing:!!pt.map_on,pos:pt.map_on?pos(pt):null}:null};
+ const gh=r=>ghostOn(r,now)?Number(r.ghost_until):null;
+ return {me:{name:me.display_name,sharing:!!me.map_on,ghostUntil:gh(me),pos:pos(me)},partner:pt?{name:pt.display_name,sharing:!!pt.map_on,ghost:ghostOn(pt,now),pos:pt.map_on&&!ghostOn(pt,now)?pos(pt):null}:null};
 }
 async function quizSummary(env,m){
  const s=await quizRow(env,m.pair_id);if(!s)return null;
@@ -292,7 +296,7 @@ async function state(env,m){
  const prog=await progressOf(env,m.pair_id),n=prog.meetings;
  const p=await prefs(env,m.pair_id);
  const subs=(await env.DB.prepare('SELECT COUNT(*) AS n FROM push_subs WHERE member_id=?').bind(m.id).first()).n;
- return {you:m.slot,members:rows.map(x=>({name:x.display_name,slot:x.slot,locationActive:!!x.geo_on&&Number(x.location_at||0)>Date.now()-RULES.FRESH})),code:rows.length<2?pair.invite_code:null,firstMetAt:pair.first_met_at,createdAt:pair.created_at,count:n,meetings:meets.results||[],together:v.stage==='together'||v.stage==='recorded',connected:rows.length===2,
+ return {you:m.slot,ghostUntil:ghostOn(me)?Number(me.ghost_until):null,members:rows.map(x=>({name:x.display_name,slot:x.slot,locationActive:!!x.geo_on&&Number(x.location_at||0)>Date.now()-RULES.FRESH})),code:rows.length<2?pair.invite_code:null,firstMetAt:pair.first_met_at,createdAt:pair.created_at,count:n,meetings:meets.results||[],together:v.stage==='together'||v.stage==='recorded',connected:rows.length===2,
   progress:prog,energy,quiz:await quizSummary(env,m),streak:await streakView(env,m.pair_id),
   rewards:{unlocked:unlockedIds(prog),claimed:p.claimed.filter(x=>claimable(BY_ID[x],prog,p.opened)),equipped:sanitizeOutfit(p.equipped,prog,p.opened,p.claimed),opened:p.opened,version:p.version,lastChange:p.lastChange,room:p.room,achieved:p.achieved},
   proximity:proximityOut(v,me),push:{available:pushReady(env),key:env.VAPID_PUBLIC||null,subscribed:subs>0}};
@@ -355,6 +359,8 @@ async function api(req,env,path,ctx){
   if(!Number.isFinite(lat)||!Number.isFinite(lon)||Math.abs(lat)>90||Math.abs(lon)>180||!Number.isFinite(accuracy)||accuracy<0||accuracy>5000)return bad('Nieprawidłowy pomiar.');
   const ts=Number.isFinite(Number(b?.ts))?Math.min(now,Number(b.ts)):now;
   if(now-ts>RULES.FRESH)return bad('Ten pomiar jest już nieaktualny.',422);
+  // ghost mode: the reading is dropped, nothing is stored
+  if(ghostOn(m,now)){await env.DB.prepare('UPDATE members SET latitude=NULL,longitude=NULL,accuracy=NULL,location_at=NULL,geo_on=0 WHERE id=?').bind(m.id).run();return ok(await state(env,m))}
   await env.DB.prepare('UPDATE members SET latitude=?,longitude=?,accuracy=?,location_at=?,geo_on=1 WHERE id=?').bind(lat,lon,accuracy,ts,m.id).run();
   if(path==='/api/check'){
    // ask the partner's phone for a fresh reading right now (if the app is open it answers within seconds)
@@ -547,6 +553,39 @@ async function api(req,env,path,ctx){
   // a new radius starts a fresh proximity session
   await env.DB.batch([env.DB.prepare('UPDATE pair_prefs SET radius=?,updated_at=? WHERE pair_id=?').bind(radius,Date.now(),m.pair_id),env.DB.prepare('UPDATE pairs SET active_since=NULL,apart_since=NULL WHERE id=? AND active_recorded=0').bind(m.pair_id)]);
   return ok(await state(env,m));
+ }
+ if(method==='POST'&&path==='/api/ghost'){
+  // ghost mode: {minutes: 60|480} for a while, {forever:true} until switched off, {off:true} to end it.
+  // Starting it erases my last position at once; the partner only sees that I am on a break.
+  const b=await body(req),now=Date.now();let until=null;
+  if(b?.off)until=null;
+  else if(b?.forever)until=GHOST_FOREVER;
+  else{const min=Number(b?.minutes);if(!Number.isInteger(min)||min<15||min>7*24*60)return bad('Wybierz, na jak długo.');until=now+min*60000}
+  await env.DB.prepare(until?'UPDATE members SET ghost_until=?,latitude=NULL,longitude=NULL,accuracy=NULL,location_at=NULL,geo_on=0 WHERE id=?':'UPDATE members SET ghost_until=? WHERE id=?').bind(until,m.id).run();
+  if(until)await env.DB.prepare('UPDATE pairs SET active_since=NULL,apart_since=NULL,confirm1_at=NULL,confirm2_at=NULL WHERE id=? AND active_recorded=0').bind(m.pair_id).run();
+  const me={...m,ghost_until:until};
+  return ok({...await state(env,me),map:await mapView(env,me)});
+ }
+ if(method==='POST'&&path==='/api/unpair'){
+  // End the pair for good: every row of this pair is deleted for both people
+  // (meetings, rewards, house, quizzes, energy, positions, push, sign-in codes).
+  // Both phones' sessions stop working; nothing can be restored.
+  const b=await body(req);if(b?.confirm!=='ROZŁĄCZ')return bad('Potwierdź rozłączenie.');
+  const pid=m.pair_id,inPair='SELECT id FROM members WHERE pair_id=?';
+  await env.DB.batch([
+   env.DB.prepare('DELETE FROM quiz_answers WHERE session_id IN (SELECT id FROM quiz_sessions WHERE pair_id=?)').bind(pid),
+   env.DB.prepare('DELETE FROM quiz_sessions WHERE pair_id=?').bind(pid),
+   env.DB.prepare('DELETE FROM energy_events WHERE pair_id=?').bind(pid),
+   env.DB.prepare('DELETE FROM meetings WHERE pair_id=?').bind(pid),
+   env.DB.prepare('DELETE FROM pair_prefs WHERE pair_id=?').bind(pid),
+   env.DB.prepare(`DELETE FROM push_subs WHERE member_id IN (${inPair})`).bind(pid),
+   env.DB.prepare(`DELETE FROM member_tokens WHERE member_id IN (${inPair})`).bind(pid),
+   env.DB.prepare(`DELETE FROM member_recovery WHERE member_id IN (${inPair})`).bind(pid),
+   env.DB.prepare('DELETE FROM members WHERE pair_id=?').bind(pid),
+   env.DB.prepare('DELETE FROM pairs WHERE id=?').bind(pid),
+  ]);
+  console.log(JSON.stringify({t:'unpair',pair:pid.slice(0,6)}));
+  return ok({deleted:true});
  }
  if(method==='POST'&&path==='/api/location-off'){
   // this person stops sharing: position erased at once

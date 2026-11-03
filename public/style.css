@@ -405,6 +405,8 @@ img { display: block; user-select: none; -webkit-user-drag: none; }
 .btn-soft { height: calc(40 * var(--u)); padding: 0 calc(18 * var(--u)); border-radius: calc(99 * var(--u)); background: #fff; box-shadow: inset 0 0 0 calc(1.2 * var(--u)) #f1dfe7; color: #4b3d68; font-size: calc(14 * var(--u)); font-weight: 600; }
 .btn-soft.wide { width: 100%; }
 .btn-danger { color: #c0386f; }
+.btn-main.btn-unpair { background: linear-gradient(180deg, #ef6f8f, #d94a74); box-shadow: 0 calc(4 * var(--u)) calc(12 * var(--u)) rgba(217, 74, 116, .3); }
+.sheet .btn-ghost.wide + .row-btns { margin-top: calc(10 * var(--u)); }
 .note { margin: calc(10 * var(--u)) 0 0; text-align: center; font-size: calc(11.8 * var(--u)); color: #8a7f9f; }
 
 /* ---------------------------------------------------------------- sheets */

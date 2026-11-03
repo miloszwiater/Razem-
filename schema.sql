@@ -23,6 +23,8 @@ CREATE TABLE IF NOT EXISTS members (
  location_at INTEGER,
  geo_on INTEGER NOT NULL DEFAULT 0,
  ping_at INTEGER,
+ map_on INTEGER NOT NULL DEFAULT 0,
+ ghost_until INTEGER,
  UNIQUE(pair_id, slot)
 );
 CREATE TABLE IF NOT EXISTS meetings (
